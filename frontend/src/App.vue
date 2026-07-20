@@ -390,7 +390,7 @@ watch(
             <MonitorUp v-else :size="17" />
             <span v-if="isYoutubeSession">
               <strong>① 강의 열기·광고 넘기기 → ② YouTube 듣기 → ③ 해당 Chrome 탭 선택 → ④ 탭 오디오 공유 켜기 → ⑤ 영상 재생</strong>
-              <small>30초 음성 조각은 STT 직후 폐기되고 텍스트·요약만 로컬 DB에 저장됩니다.</small>
+              <small>최대 30초 음성 조각은 5초 무음 또는 길이 제한에 도달하면 STT 후 폐기되고, 텍스트·요약만 로컬 DB에 저장됩니다.</small>
             </span>
             <span v-else>녹음 버튼을 누른 뒤 Zoom이 열린 <strong>브라우저 탭</strong>을 선택하고, “탭 오디오 공유”를 켜 주세요.</span>
             <a v-if="isYoutubeSession && activeSession.source_url" :href="activeSession.source_url" target="_blank" rel="noopener noreferrer">

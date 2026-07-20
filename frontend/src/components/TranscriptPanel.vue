@@ -85,7 +85,7 @@ watch(
       <div v-if="!filteredSegments.length" class="empty-transcript">
         <span class="empty-wave"><Waves :size="30" /></span>
         <h3>{{ query ? '검색 결과가 없어요' : '아직 들려온 내용이 없어요' }}</h3>
-        <p>{{ query ? '다른 단어로 검색해 보세요.' : '녹음을 시작하면 30초 단위로 수업 내용이 표시됩니다.' }}</p>
+        <p>{{ query ? '다른 단어로 검색해 보세요.' : '녹음을 시작하면 5초 무음 또는 최대 30초 단위로 수업 내용이 표시됩니다.' }}</p>
       </div>
 
       <article v-for="segment in filteredSegments" :key="segment.id" class="transcript-row">

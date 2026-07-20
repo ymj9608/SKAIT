@@ -1,7 +1,12 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 
-// Whisper가 기본적으로 처리하는 30초 창에 맞춰 호출 오버헤드를 줄입니다.
-const CHUNK_MILLISECONDS = 30_000
+// Whisper가 기본적으로 처리하는 30초 창은 계속 말할 때의 최대 길이로 유지합니다.
+// 그 전에 5초 동안 소리가 없으면 현재 구간을 먼저 전송하고 다음 발화를 기다립니다.
+const MAX_CHUNK_MILLISECONDS = 30_000
+const SILENCE_MILLISECONDS = 5_000
+const VAD_POLL_MILLISECONDS = 50
+const SPEECH_START_RMS = 0.015
+const SPEECH_CONTINUE_RMS = 0.008
 
 function supportedMimeType() {
   if (typeof MediaRecorder === 'undefined') return ''
@@ -21,6 +26,15 @@ export function useRecorder(onChunk, onCaptureEnded) {
   let recorder = null
   let chunkTimeout = null
   let clockInterval = null
+  let vadInterval = null
+  let audioContext = null
+  let analyser = null
+  let analyserSource = null
+  let analyserSamples = null
+  let voiceActivityDetectionEnabled = false
+  let lastSoundAt = null
+  let stopCurrentChunk = null
+  let markCurrentChunkSound = null
   let startedAt = 0
   let baseSeconds = 0
   let stopResolver = null
@@ -37,7 +51,24 @@ export function useRecorder(onChunk, onCaptureEnded) {
     return `${hours}:${minutes}:${seconds}`
   })
 
+  function stopVoiceActivityDetection() {
+    clearInterval(vadInterval)
+    vadInterval = null
+    analyserSource?.disconnect()
+    analyser?.disconnect()
+    analyserSource = null
+    analyser = null
+    analyserSamples = null
+    voiceActivityDetectionEnabled = false
+    lastSoundAt = null
+    if (audioContext && audioContext.state !== 'closed') {
+      void audioContext.close()
+    }
+    audioContext = null
+  }
+
   function releaseTracks() {
+    stopVoiceActivityDetection()
     captureStream?.getTracks().forEach((track) => track.stop())
     if (audioStream !== captureStream) {
       audioStream?.getTracks().forEach((track) => track.stop())
@@ -55,23 +86,69 @@ export function useRecorder(onChunk, onCaptureEnded) {
     }
   }
 
+  function currentRms() {
+    if (!analyser || !analyserSamples) return 0
+    analyser.getFloatTimeDomainData(analyserSamples)
+    let sumOfSquares = 0
+    for (const sample of analyserSamples) {
+      sumOfSquares += sample * sample
+    }
+    return Math.sqrt(sumOfSquares / analyserSamples.length)
+  }
+
   function beginChunk() {
-    if (!isRecording.value || !audioStream?.active) return
+    if (!isRecording.value || !audioStream?.active || recorder) return
 
     const chunks = []
     const chunkStartedAt = elapsed.value
     const mimeType = supportedMimeType()
-    recorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : undefined)
-    recorder.ondataavailable = (event) => {
+    const currentRecorder = new MediaRecorder(
+      audioStream,
+      mimeType ? { mimeType } : undefined,
+    )
+    // AudioContext를 지원하지 않는 브라우저의 30초 고정 폴백에서는
+    // 분석 결과가 없으므로 기존처럼 모든 조각을 전송합니다.
+    let chunkHasSound = !voiceActivityDetectionEnabled
+    let stopReason = 'manual'
+    let currentChunkTimeout = null
+
+    recorder = currentRecorder
+    const markChunkSound = () => {
+      chunkHasSound = true
+    }
+    const requestChunkStop = (reason) => {
+      if (currentRecorder.state !== 'recording') return
+      stopReason = reason
+      currentRecorder.stop()
+    }
+    markCurrentChunkSound = markChunkSound
+    stopCurrentChunk = requestChunkStop
+
+    currentRecorder.ondataavailable = (event) => {
       if (event.data.size) chunks.push(event.data)
     }
-    recorder.onerror = (event) => {
+    currentRecorder.onerror = (event) => {
       error.value = event.error?.message || '오디오 녹음 중 오류가 발생했습니다.'
     }
-    recorder.onstop = async () => {
-      clearTimeout(chunkTimeout)
-      if (isRecording.value && audioStream?.active) beginChunk()
-      if (chunks.length) {
+    currentRecorder.onstop = async () => {
+      clearTimeout(currentChunkTimeout)
+      if (chunkTimeout === currentChunkTimeout) chunkTimeout = null
+      if (recorder === currentRecorder) recorder = null
+      if (stopCurrentChunk === requestChunkStop) stopCurrentChunk = null
+      if (markCurrentChunkSound === markChunkSound) markCurrentChunkSound = null
+
+      // 최대 길이로 자른 경우에는 짧은 침묵 중일 수도 있으므로 바로 다음
+      // 조각을 열어 둡니다. 5초 무음으로 끝난 경우에는 새 소리를 기다립니다.
+      if (
+        stopReason === 'max-duration' &&
+        isRecording.value &&
+        audioStream?.active
+      ) {
+        beginChunk()
+      }
+
+      // 무음만 들어 있던 조각은 Whisper로 보내지 않습니다.
+      if (chunks.length && chunkHasSound) {
         pendingUploads += 1
         isProcessing.value = true
         try {
@@ -89,10 +166,52 @@ export function useRecorder(onChunk, onCaptureEnded) {
       }
       finishIfIdle()
     }
-    recorder.start()
-    chunkTimeout = window.setTimeout(() => {
-      if (recorder?.state === 'recording') recorder.stop()
-    }, CHUNK_MILLISECONDS)
+    currentRecorder.start()
+    currentChunkTimeout = window.setTimeout(() => {
+      requestChunkStop('max-duration')
+    }, MAX_CHUNK_MILLISECONDS)
+    chunkTimeout = currentChunkTimeout
+  }
+
+  async function startVoiceActivityDetection() {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextClass) return false
+
+    audioContext = new AudioContextClass()
+    analyser = audioContext.createAnalyser()
+    analyser.fftSize = 2048
+    analyser.smoothingTimeConstant = 0.2
+    analyserSamples = new Float32Array(analyser.fftSize)
+    analyserSource = audioContext.createMediaStreamSource(audioStream)
+    analyserSource.connect(analyser)
+    await audioContext.resume()
+    voiceActivityDetectionEnabled = true
+
+    vadInterval = window.setInterval(() => {
+      if (!isRecording.value || !audioStream?.active) return
+
+      const now = performance.now()
+      const rms = currentRms()
+      const chunkIsRecording = recorder?.state === 'recording'
+      const threshold = chunkIsRecording ? SPEECH_CONTINUE_RMS : SPEECH_START_RMS
+
+      if (rms >= threshold) {
+        lastSoundAt = now
+        if (!chunkIsRecording) beginChunk()
+        markCurrentChunkSound?.()
+        return
+      }
+
+      if (
+        chunkIsRecording &&
+        lastSoundAt !== null &&
+        now - lastSoundAt >= SILENCE_MILLISECONDS
+      ) {
+        stopCurrentChunk?.('silence')
+      }
+    }, VAD_POLL_MILLISECONDS)
+
+    return true
   }
 
   async function start(selectedSource = 'screen', initialSeconds = 0) {
@@ -107,6 +226,7 @@ export function useRecorder(onChunk, onCaptureEnded) {
     uploadQueue = Promise.resolve()
     stopPromise = null
     stopResolver = null
+    lastSoundAt = null
 
     if (selectedSource === 'screen') {
       captureStream = await navigator.mediaDevices.getDisplayMedia({
@@ -151,7 +271,11 @@ export function useRecorder(onChunk, onCaptureEnded) {
     clockInterval = window.setInterval(() => {
       elapsed.value = baseSeconds + (Date.now() - startedAt) / 1000
     }, 250)
-    beginChunk()
+
+    // 분석 API가 없는 오래된 브라우저에서는 기존 30초 고정 녹음으로
+    // 안전하게 폴백합니다.
+    const vadReady = await startVoiceActivityDetection()
+    if (!vadReady) beginChunk()
   }
 
   function stop() {
@@ -163,11 +287,12 @@ export function useRecorder(onChunk, onCaptureEnded) {
     isRecording.value = false
     clearInterval(clockInterval)
     clearTimeout(chunkTimeout)
+    stopVoiceActivityDetection()
     stopPromise = new Promise((resolve) => {
       stopResolver = resolve
     })
     if (recorder?.state === 'recording') {
-      recorder.stop()
+      stopCurrentChunk?.('manual')
     } else {
       queueMicrotask(finishIfIdle)
     }

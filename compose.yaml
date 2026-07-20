@@ -1,0 +1,24 @@
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_FILE: /app/data/reclass.sqlite3
+      DATA_FILE: /app/data/sessions.json
+      CORS_ORIGINS: http://localhost:8080
+    volumes:
+      - study-data:/app/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  study-data:

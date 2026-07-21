@@ -7,7 +7,13 @@ import unittest
 from pydantic import ValidationError
 
 from app.repository import LEGACY_IMPORT_MARKER, SessionRepository
-from app.schemas import LectureSession, SessionCreate, StudyMaterial, TranscriptSegment
+from app.schemas import (
+    LearningItem,
+    LectureSession,
+    SessionCreate,
+    StudyMaterial,
+    TranscriptSegment,
+)
 
 
 def sample_session(session_id: str = "session-1", title: str = "테스트 수업") -> LectureSession:
@@ -39,6 +45,16 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
             summary="자바스크립트 함수 활용 수업입니다.",
             key_points=["함수는 값처럼 전달할 수 있습니다."],
             keywords=["함수", "콜백"],
+            keyword_explanations={
+                "콜백": "다른 함수에 인자로 전달되어 나중에 실행되는 함수입니다."
+            },
+            learning_items=[
+                LearningItem(
+                    type="term",
+                    title="콜백",
+                    explanation="다른 함수에 인자로 전달되어 나중에 실행되는 함수입니다.",
+                )
+            ],
             review_questions=["콜백 함수란 무엇인가요?"],
         ),
     )

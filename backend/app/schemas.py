@@ -25,10 +25,18 @@ class SourceReference(BaseModel):
     excerpt: str
 
 
+class LearningItem(BaseModel):
+    type: Literal["term", "concept"]
+    title: str = Field(min_length=1, max_length=180)
+    explanation: str = Field(min_length=1, max_length=500)
+
+
 class StudyMaterial(BaseModel):
     summary: str = "아직 정리할 수업 내용이 없습니다. 녹음을 시작하거나 텍스트를 추가해 주세요."
     key_points: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    keyword_explanations: dict[str, str] = Field(default_factory=dict)
+    learning_items: list[LearningItem] = Field(default_factory=list)
     review_questions: list[str] = Field(default_factory=list)
 
 

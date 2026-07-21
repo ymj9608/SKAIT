@@ -3,16 +3,19 @@ from pathlib import Path
 import unittest
 
 from app.config import Settings
-from app.schemas import TranscriptSegment
+from app.schemas import LearningItem, TranscriptSegment
 from app.services.stt import MlxWhisperSpeechToText
 from app.services.study import (
     HuggingFaceStudyAssistant,
     LocalStudyAssistant,
     OllamaStudyAssistant,
+    build_learning_item_detection_messages,
+    build_recent_learning_context,
     build_summary_context,
     build_study_assistant,
     extractive_summary,
     format_timestamp,
+    merge_learning_items,
     rank_sources,
 )
 
@@ -120,15 +123,161 @@ class StudyServiceTests(unittest.TestCase):
         self.assertIn("this", result.supplementary_explanation)
         self.assertIn("콜백", result.answer)
 
-    def test_short_lecture_summary_stays_grounded(self) -> None:
+    def test_long_summary_uses_english_icl_and_returns_korean_term_explanations(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
-        assistant._chat = lambda *args: self.fail("짧은 전사는 생성 모델을 호출하면 안 됩니다.")
+        captured = {}
+
+        def fake_chat(messages, max_tokens=700):
+            captured.update({"messages": messages, "max_tokens": max_tokens})
+            return """{
+              "summary": "화살표 함수의 작성법을 소개합니다.",
+              "key_points": ["화살표 함수는 함수를 작성하는 문법입니다."],
+              "learning_items": [
+                {
+                  "type": "term",
+                  "title": "화살표 함수(Arrow Function)",
+                  "explanation": "function 키워드 대신 화살표 기호를 사용하는 자바스크립트 함수 문법입니다."
+                },
+                {
+                  "type": "concept",
+                  "title": "화살표 함수는 자신만의 this를 만들지 않는다",
+                  "explanation": "함수가 정의된 바깥 범위의 this를 사용한다는 의미입니다."
+                }
+              ],
+              "review_questions": ["화살표 함수는 어떤 문법인가요?"]
+            }"""
+
+        assistant._chat = fake_chat
+        lecture_text = "자바스크립트에서 함수를 만드는 방법은 함수 표현식, 함수 선언식, 화살표 함수가 있습니다."
+        segments = [
+            TranscriptSegment(text=lecture_text * 5),
+            TranscriptSegment(text="화살표 함수 문법과 함수 표현식의 차이를 예제 코드로 비교합니다." * 5),
+        ]
+        self.assertGreaterEqual(sum(len(item.text) for item in segments), 300)
+        material = asyncio.run(assistant.summarize(segments))
+        self.assertIn("화살표 함수", material.summary)
+        self.assertEqual(material.keywords, ["화살표 함수(Arrow Function)"])
+        self.assertIn("자바스크립트", material.keyword_explanations[material.keywords[0]])
+        self.assertEqual([item.type for item in material.learning_items], ["term", "concept"])
+        self.assertEqual(captured["max_tokens"], 900)
+        self.assertGreaterEqual(len(captured["messages"]), 6)
+        self.assertIn("All learner-facing output must be in Korean", captured["messages"][0]["content"])
+        self.assertIn("Requirements:", captured["messages"][-1]["content"])
+        self.assertIn(lecture_text, captured["messages"][-1]["content"])
+
+    def test_short_summary_stays_extractive_and_leaves_terms_to_detector(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
+        assistant._chat = lambda *args: self.fail("짧은 전체 요약은 생성 모델을 호출하면 안 됩니다.")
         segment = TranscriptSegment(
-            text="자바스크립트에서 함수를 만드는 방법은 함수 표현식, 함수 선언식, 화살표 함수가 있습니다."
+            text="트랜스포머에서는 멀티헤드 어텐션으로 여러 관계를 병렬로 학습합니다."
         )
         material = asyncio.run(assistant.summarize([segment]))
         self.assertEqual(material.summary, segment.text)
         self.assertEqual(material.key_points, [segment.text])
+        self.assertEqual(material.keywords, [])
+        self.assertEqual(material.keyword_explanations, {})
+        self.assertEqual(material.learning_items, [])
+
+    def test_learning_item_prompt_separates_context_and_uses_icl(self) -> None:
+        messages = build_learning_item_detection_messages(
+            "직전에는 REST API 요청 흐름을 설명했습니다.",
+            "오늘은 실습 파일을 저장하고 잠시 쉬겠습니다.",
+            ["REST API"],
+        )
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("Select zero to three total items", messages[0]["content"])
+        self.assertIn("term:", messages[0]["content"])
+        self.assertIn("concept:", messages[0]["content"])
+        self.assertTrue(
+            any(
+                message["role"] == "assistant"
+                and message["content"] == '{"items":[]}'
+                for message in messages
+            )
+        )
+        self.assertTrue(
+            any(
+                message["role"] == "assistant"
+                and '"이상치(Outlier)"' in message["content"]
+                and '"아울라(Outlier)"' not in message["content"]
+                for message in messages
+            )
+        )
+        self.assertIn("<PREVIOUS_CONTEXT>", messages[-1]["content"])
+        self.assertIn("<CURRENT_CONTEXT>", messages[-1]["content"])
+        self.assertIn('["REST API"]', messages[-1]["content"])
+
+    def test_detect_learning_items_returns_term_and_concept_in_korean(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
+        assistant._chat = lambda messages, max_tokens=700: """{
+          "items": [
+            {
+              "type": "term",
+              "title": "Self-Attention",
+              "explanation": "각 토큰이 다른 토큰을 얼마나 참고할지 계산하는 방식입니다."
+            },
+            {
+              "type": "concept",
+              "title": "Self-Attention은 입력 토큰 사이의 관계를 계산한다",
+              "explanation": "각 입력이 다른 입력과 맺는 관련성을 계산해 문맥을 반영합니다."
+            },
+            {
+              "type": "term",
+              "title": "Unknown",
+              "explanation": "English explanation only"
+            }
+          ]
+        }"""
+        detected = asyncio.run(
+            assistant.detect_learning_items(
+                "앞에서 트랜스포머 구조를 설명했습니다.",
+                "셀프 어텐션으로 입력 토큰 사이의 관계를 계산합니다.",
+                [],
+            )
+        )
+        self.assertEqual([item.type for item in detected], ["term", "concept"])
+        self.assertEqual(detected[0].title, "Self-Attention")
+        self.assertIn("관련성", detected[1].explanation)
+
+    def test_merge_learning_items_keeps_recent_twenty_and_syncs_legacy_terms(self) -> None:
+        material = extractive_summary(self.segments)
+        material.learning_items = [
+            LearningItem(type="term", title=f"기존용어{index}", explanation="기존 한국어 설명입니다.")
+            for index in range(20)
+        ]
+        detected = [
+            LearningItem(
+                type="term",
+                title="REST API",
+                explanation="HTTP를 이용해 클라이언트와 서버가 통신하도록 정한 인터페이스 방식입니다.",
+            ),
+            LearningItem(
+                type="concept",
+                title="서버는 요청과 응답으로 클라이언트와 통신한다",
+                explanation="클라이언트가 요청을 보내면 서버가 처리 결과를 응답으로 돌려준다는 의미입니다.",
+            ),
+        ]
+        merged = merge_learning_items(material, detected)
+        self.assertEqual(len(merged.learning_items), 20)
+        self.assertEqual(merged.learning_items[-1].type, "concept")
+        self.assertIn("REST API", merged.keywords)
+        self.assertIn("HTTP", merged.keyword_explanations["REST API"])
+        self.assertLessEqual(len(merged.keywords), 8)
+
+    def test_recent_learning_context_uses_previous_ninety_seconds(self) -> None:
+        segments = [
+            TranscriptSegment(start_seconds=0, text="범위 밖 초기 문맥"),
+            TranscriptSegment(start_seconds=30, text="90초 전 문맥"),
+            TranscriptSegment(start_seconds=60, text="60초 전 문맥"),
+            TranscriptSegment(start_seconds=90, text="30초 전 문맥"),
+            TranscriptSegment(start_seconds=120, text="현재 문맥"),
+        ]
+        previous, current = build_recent_learning_context(segments)
+        self.assertNotIn("범위 밖 초기 문맥", previous)
+        self.assertIn("90초 전 문맥", previous)
+        self.assertIn("30초 전 문맥", previous)
+        self.assertNotIn("현재 문맥", previous)
+        self.assertIn("현재 문맥", current)
 
     def test_long_summary_context_keeps_early_and_late_sections(self) -> None:
         segments = [

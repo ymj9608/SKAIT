@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ArrowUp,
   BookCheck,
@@ -7,10 +7,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock3,
-  Lightbulb,
-  ListChecks,
   MessageCircleQuestion,
-  RefreshCw,
   Sparkles,
 } from '@lucide/vue'
 import { api } from '../services/api'
@@ -26,11 +23,78 @@ const emit = defineEmits(['updated', 'error'])
 const tab = ref('note')
 const question = ref('')
 const asking = ref(false)
-const refreshing = ref(false)
 const chatScroll = ref(null)
 const messages = ref([])
+const panelWidth = ref(390)
+const resizingPanel = ref(false)
+
+const PANEL_WIDTH_STORAGE_KEY = 'reclass-coach-panel-width'
+const MIN_PANEL_WIDTH = 320
+const MAX_PANEL_WIDTH = 680
 
 const material = computed(() => props.session?.material || {})
+const learningItems = computed(() => {
+  if (material.value.learning_items?.length) {
+    return [...material.value.learning_items].reverse()
+  }
+  return [...(material.value.keywords || [])].reverse().map((keyword) => ({
+    type: 'term',
+    title: keyword,
+    explanation: material.value.keyword_explanations?.[keyword] || '',
+  }))
+})
+const termItems = computed(() => learningItems.value.filter((item) => item.type === 'term'))
+const conceptItems = computed(() => learningItems.value.filter((item) => item.type === 'concept'))
+
+function allowedPanelWidth(width) {
+  const compactLayout = window.innerWidth <= 1180
+  const sidebarWidth = compactLayout ? 228 : 268
+  const lessonMinWidth = compactLayout ? 420 : 480
+  const availableWidth = window.innerWidth - sidebarWidth - lessonMinWidth
+  return Math.min(Math.max(width, MIN_PANEL_WIDTH), Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, availableWidth)))
+}
+
+function savePanelWidth() {
+  localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(Math.round(panelWidth.value)))
+}
+
+function stopPanelResize() {
+  if (!resizingPanel.value) return
+  resizingPanel.value = false
+  document.body.classList.remove('is-resizing-coach')
+  window.removeEventListener('pointermove', resizePanel)
+  window.removeEventListener('pointerup', stopPanelResize)
+  window.removeEventListener('pointercancel', stopPanelResize)
+  savePanelWidth()
+}
+
+let resizeStartX = 0
+let resizeStartWidth = 0
+
+function resizePanel(event) {
+  panelWidth.value = allowedPanelWidth(resizeStartWidth + resizeStartX - event.clientX)
+}
+
+function startPanelResize(event) {
+  if (window.innerWidth <= 920) return
+  event.preventDefault()
+  resizeStartX = event.clientX
+  resizeStartWidth = panelWidth.value
+  resizingPanel.value = true
+  document.body.classList.add('is-resizing-coach')
+  window.addEventListener('pointermove', resizePanel)
+  window.addEventListener('pointerup', stopPanelResize)
+  window.addEventListener('pointercancel', stopPanelResize)
+}
+
+function resetPanelWidth() {
+  panelWidth.value = allowedPanelWidth(390)
+  savePanelWidth()
+}
+
+function fitPanelWidth() {
+  if (window.innerWidth > 920) panelWidth.value = allowedPanelWidth(panelWidth.value)
+}
 
 function timestamp(seconds) {
   const total = Math.max(0, Math.floor(seconds || 0))
@@ -48,6 +112,17 @@ function resetChat() {
 }
 
 watch(() => props.session?.id, resetChat, { immediate: true })
+
+onMounted(() => {
+  const savedWidth = Number(localStorage.getItem(PANEL_WIDTH_STORAGE_KEY))
+  if (Number.isFinite(savedWidth) && savedWidth > 0) panelWidth.value = allowedPanelWidth(savedWidth)
+  window.addEventListener('resize', fitPanelWidth)
+})
+
+onBeforeUnmount(() => {
+  stopPanelResize()
+  window.removeEventListener('resize', fitPanelWidth)
+})
 
 async function scrollToBottom() {
   await nextTick()
@@ -85,25 +160,22 @@ async function sendQuestion(prompt) {
   }
 }
 
-async function refresh() {
-  if (!props.session || refreshing.value) return
-  if (!props.llmReady) {
-    emit('error', '로컬 LLM이 준비되지 않았습니다.')
-    return
-  }
-  refreshing.value = true
-  try {
-    emit('updated', await api.refreshSummary(props.session.id))
-  } catch (error) {
-    emit('error', error.message)
-  } finally {
-    refreshing.value = false
-  }
-}
 </script>
 
 <template>
-  <aside class="coach-panel">
+  <aside
+    class="coach-panel"
+    :class="{ 'coach-panel--resizing': resizingPanel }"
+    :style="{ '--coach-panel-width': `${panelWidth}px` }"
+  >
+    <button
+      type="button"
+      class="coach-panel-resizer"
+      aria-label="AI 노트 패널 너비 조절"
+      title="드래그하여 AI 노트 너비 조절 · 더블 클릭하여 초기화"
+      @pointerdown="startPanelResize"
+      @dblclick="resetPanelWidth"
+    />
     <header class="coach-header">
       <div class="coach-title">
         <span class="ai-orb"><Sparkles :size="18" /></span>
@@ -125,33 +197,65 @@ async function refresh() {
     </div>
 
     <div v-if="tab === 'note'" class="note-scroll">
-      <section class="summary-block">
+      <section class="note-section learning-section learning-section--terms">
         <div class="section-heading">
-          <span><Lightbulb :size="17" /> 한눈에 보는 핵심</span>
-          <button title="AI 노트 새로고침" :disabled="refreshing || !llmReady" @click="refresh">
-            <RefreshCw :size="15" :class="{ spin: refreshing }" />
-          </button>
+          <span>
+            <BookCheck :size="17" /> 알아둘 용어
+            <small class="learning-item-count">{{ termItems.length }}</small>
+          </span>
+          <small class="learning-sort-label">최신순</small>
         </div>
-        <p>{{ material.summary }}</p>
+        <div v-if="termItems.length" class="keyword-list">
+          <div
+            v-for="(item, index) in termItems"
+            :key="`term-${item.title}-${index}`"
+            class="keyword-item keyword-item--term"
+          >
+            <div class="learning-item-heading">
+              <button
+                :title="`${item.title} 더 자세히 질문하기`"
+                @click="sendQuestion(`${item.title}를 비전공자도 이해하게 쉽게 설명해줘`)"
+              >
+                {{ item.title }}
+              </button>
+            </div>
+            <p v-if="item.explanation">{{ item.explanation }}</p>
+          </div>
+        </div>
+        <div v-else class="learning-empty">
+          <strong>아직 감지된 용어가 없습니다.</strong>
+          <p>새로운 전문 용어가 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
+        </div>
       </section>
 
-      <section class="note-section">
-        <div class="section-heading"><span><ListChecks :size="17" /> 핵심 포인트</span></div>
-        <ol v-if="material.key_points?.length" class="key-point-list">
-          <li v-for="(point, index) in material.key_points" :key="point">
-            <span>{{ String(index + 1).padStart(2, '0') }}</span>
-            <p>{{ point }}</p>
-          </li>
-        </ol>
-        <p v-else class="muted-copy">전사가 쌓이면 핵심 포인트가 만들어집니다.</p>
-      </section>
-
-      <section v-if="material.keywords?.length" class="note-section">
-        <div class="section-heading"><span><Sparkles :size="17" /> 오늘의 키워드</span></div>
-        <div class="keyword-list">
-          <button v-for="keyword in material.keywords" :key="keyword" @click="sendQuestion(`${keyword}를 비전공자도 이해하게 쉽게 설명해줘`)" >
-            # {{ keyword }}
-          </button>
+      <section class="note-section learning-section learning-section--concepts">
+        <div class="section-heading">
+          <span>
+            <Sparkles :size="17" /> 중요 개념
+            <small class="learning-item-count learning-item-count--concept">{{ conceptItems.length }}</small>
+          </span>
+          <small class="learning-sort-label">최신순</small>
+        </div>
+        <div v-if="conceptItems.length" class="keyword-list">
+          <div
+            v-for="(item, index) in conceptItems"
+            :key="`concept-${item.title}-${index}`"
+            class="keyword-item keyword-item--concept"
+          >
+            <div class="learning-item-heading">
+              <button
+                :title="`${item.title} 더 자세히 질문하기`"
+                @click="sendQuestion(`${item.title}를 비전공자도 이해하게 쉽게 설명해줘`)"
+              >
+                {{ item.title }}
+              </button>
+            </div>
+            <p v-if="item.explanation">{{ item.explanation }}</p>
+          </div>
+        </div>
+        <div v-else class="learning-empty">
+          <strong>아직 감지된 중요 개념이 없습니다.</strong>
+          <p>새로운 원리나 개념이 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
         </div>
       </section>
 

@@ -1,4 +1,4 @@
-from .schemas import LectureSession, StudyMaterial, TranscriptSegment
+from .schemas import LearningItem, LectureSession, StudyMaterial, TranscriptSegment
 
 
 def build_demo_session() -> LectureSession:
@@ -44,6 +44,23 @@ def build_demo_session() -> LectureSession:
                 "비동기는 입출력 대기 시간을 활용하지만 CPU 작업 자체를 빠르게 만들지는 않습니다.",
             ],
             keywords=["REST API", "HTTP", "FastAPI", "Pydantic", "비동기", "상태 코드"],
+            learning_items=[
+                LearningItem(
+                    type="term",
+                    title="REST API",
+                    explanation="HTTP 규칙을 이용해 클라이언트와 서버가 자원을 요청하고 응답하도록 설계하는 방식입니다.",
+                ),
+                LearningItem(
+                    type="term",
+                    title="Pydantic",
+                    explanation="파이썬 데이터가 정해진 타입과 형식에 맞는지 검사해 주는 라이브러리입니다.",
+                ),
+                LearningItem(
+                    type="concept",
+                    title="비동기는 대기 중에 다른 요청을 처리할 수 있다",
+                    explanation="네트워크나 데이터베이스 응답을 기다리는 시간을 비워 두지 않고 다른 작업에 활용한다는 뜻입니다.",
+                ),
+            ],
             review_questions=[
                 "GET과 POST는 각각 어떤 의도를 표현하나요?",
                 "Pydantic이 잘못된 요청을 받으면 어떤 도움을 주나요?",

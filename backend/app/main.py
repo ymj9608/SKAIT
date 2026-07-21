@@ -17,7 +17,12 @@ from .schemas import (
     TranscriptSegment,
 )
 from .services.stt import SpeechToText, build_stt
-from .services.study import StudyAssistant, build_study_assistant
+from .services.study import (
+    StudyAssistant,
+    build_recent_learning_context,
+    build_study_assistant,
+    merge_learning_items,
+)
 
 
 settings = get_settings()
@@ -83,6 +88,30 @@ def assistant_or_503() -> StudyAssistant:
     return assistant
 
 
+async def regenerate_material(session: LectureSession) -> None:
+    """전체 노트를 갱신하면서 실시간으로 찾은 term/concept를 보존합니다."""
+    previous_items = list(session.material.learning_items)
+    refreshed = await assistant_or_503().summarize(session.segments)
+    summarized_items = list(refreshed.learning_items)
+    refreshed.learning_items = previous_items
+    session.material = merge_learning_items(refreshed, summarized_items)
+
+
+async def detect_latest_learning_items(session: LectureSession) -> None:
+    """직전 최대 90초를 보조 문맥으로 사용해 현재 30초의 장애물만 탐지합니다."""
+    previous_context, current_context = build_recent_learning_context(session.segments)
+    if not current_context:
+        return
+    recent_titles = [item.title for item in session.material.learning_items[-20:]]
+    detected = await assistant_or_503().detect_learning_items(
+        previous_context,
+        current_context,
+        recent_titles,
+    )
+    if detected:
+        session.material = merge_learning_items(session.material, detected)
+
+
 @app.get("/")
 async def root() -> dict[str, str]:
     return {"name": settings.app_name, "docs": "/docs", "health": "/api/health"}
@@ -141,7 +170,8 @@ async def update_status(session_id: str, payload: StatusUpdate) -> LectureSessio
     if payload.duration_seconds is not None:
         session.duration_seconds = max(session.duration_seconds, payload.duration_seconds)
     if payload.status == "completed" and session.segments:
-        session.material = await assistant_or_503().summarize(session.segments)
+        await regenerate_material(session)
+        await detect_latest_learning_items(session)
     return repository().save(session)
 
 
@@ -163,7 +193,8 @@ async def append_transcript(session_id: str, payload: TranscriptCreate) -> Lectu
     )
     session.duration_seconds = max(session.duration_seconds, start_seconds)
     # 직접 입력은 테스트·보정 흐름이므로 즉시 AI 노트를 갱신합니다.
-    session.material = await assistant_or_503().summarize(session.segments)
+    await regenerate_material(session)
+    await detect_latest_learning_items(session)
     return repository().save(session)
 
 
@@ -206,20 +237,22 @@ async def transcribe_audio(
         )
     )
     session.duration_seconds = max(session.duration_seconds, start_seconds)
-    # 로컬 LLM이 매 오디오 구간마다 전체 노트를 다시 생성하면 업로드가
-    # 밀리므로 첫 구간과 설정된 간격에서만 중간 노트를 만듭니다.
+    # 전체 노트는 설정된 간격으로 생성하되, 그 사이에는 짧은 전문용어
+    # 탐지 프롬프트만 실행해 30초 구간의 어려운 개념을 놓치지 않습니다.
     if (
         len(session.segments) == 1
         or len(session.segments) % settings.summary_interval_segments == 0
     ):
-        session.material = await assistant_or_503().summarize(session.segments)
+        await regenerate_material(session)
+    await detect_latest_learning_items(session)
     return repository().save(session)
 
 
 @app.post("/api/sessions/{session_id}/summary", response_model=LectureSession)
 async def refresh_summary(session_id: str) -> LectureSession:
     session = get_session_or_404(session_id)
-    session.material = await assistant_or_503().summarize(session.segments)
+    await regenerate_material(session)
+    await detect_latest_learning_items(session)
     return repository().save(session)
 
 

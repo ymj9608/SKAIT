@@ -47,14 +47,20 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
-  uploadAudio: (id, blob, startSeconds) => {
+  uploadAudio: (id, blob, startSeconds, endSeconds) => {
     const data = new FormData()
     const extension = blob.type.includes('ogg') ? 'ogg' : 'webm'
     data.append('audio', blob, `lecture-${Date.now()}.${extension}`)
     data.append('start_seconds', String(startSeconds))
+    if (Number.isFinite(endSeconds)) data.append('end_seconds', String(endSeconds))
     return request(`/sessions/${id}/audio`, { method: 'POST', body: data })
   },
   refreshSummary: (id) => request(`/sessions/${id}/summary`, { method: 'POST' }),
+  addSummaryNote: (id, text) =>
+    request(`/sessions/${id}/summary-notes`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
   chat: (id, message, history = []) =>
     request(`/sessions/${id}/chat`, {
       method: 'POST',

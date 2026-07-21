@@ -29,6 +29,7 @@ const health = ref({
   llm_provider: '...',
   stt_model: null,
   llm_model: null,
+  summary_batch_seconds: 120,
 })
 const loading = ref(true)
 const loadFailed = ref(false)
@@ -58,9 +59,9 @@ function showToast(message, type = 'error') {
 }
 
 const recorder = useRecorder(
-  async (blob, startSeconds) => {
+  async (blob, startSeconds, endSeconds) => {
     if (!recordingSessionId) return
-    replaceSession(await api.uploadAudio(recordingSessionId, blob, startSeconds))
+    replaceSession(await api.uploadAudio(recordingSessionId, blob, startSeconds, endSeconds))
   },
   async (elapsedSeconds) => finalizeRecording(elapsedSeconds),
 )
@@ -263,33 +264,11 @@ async function toggleRecording() {
   }
 }
 
-async function appendText(text) {
+async function appendSummaryNote(text) {
   if (!activeSession.value) return false
   try {
-    replaceSession(
-      await api.appendTranscript(activeSession.value.id, {
-        text,
-        speaker: '교수님',
-        start_seconds: recorder.isRecording.value
-          ? recorder.elapsed.value
-          : activeSession.value.duration_seconds,
-      }),
-    )
-    showToast('수업 내용과 AI 노트를 업데이트했습니다.', 'success')
-    return true
-  } catch (error) {
-    showToast(error.message)
-    return false
-  }
-}
-
-async function updateText(segmentId, text) {
-  if (!activeSession.value) return false
-  try {
-    replaceSession(
-      await api.updateTranscript(activeSession.value.id, segmentId, { text }),
-    )
-    showToast('수업 내용과 AI 노트를 업데이트했습니다.', 'success')
+    replaceSession(await api.addSummaryNote(activeSession.value.id, text))
+    showToast('필기를 저장했습니다.', 'success')
     return true
   } catch (error) {
     showToast(error.message)
@@ -360,11 +339,9 @@ onBeforeUnmount(() => {
           </div>
 
           <TranscriptPanel
-            :segments="activeSession.segments"
-            :recording="recorder.isRecording.value"
-            :processing="recorder.isProcessing.value"
-            :append-text="appendText"
-            :update-text="updateText"
+            :summary-cards="activeSession.material?.summary_cards || []"
+            :summary-notes="activeSession.material?.summary_notes || []"
+            :append-note="appendSummaryNote"
           />
         </section>
 

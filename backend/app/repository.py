@@ -7,6 +7,7 @@ from .schemas import LectureSession, StudyMaterial, TranscriptSegment
 
 
 LEGACY_IMPORT_MARKER = "legacy_json_import_v1"
+TRANSCRIPT_REFINEMENT_VERSION = 1
 
 
 class SessionRepository:
@@ -63,6 +64,8 @@ class SessionRepository:
                     speaker TEXT NOT NULL,
                     text TEXT NOT NULL,
                     confidence REAL,
+                    raw_text TEXT,
+                    is_refined INTEGER NOT NULL DEFAULT 1,
                     UNIQUE(session_id, position)
                 );
 
@@ -77,6 +80,22 @@ class SessionRepository:
                 );
                 """
             )
+            segment_columns = {
+                str(row["name"])
+                for row in self._connection.execute("PRAGMA table_info(segments)")
+            }
+            raw_text_missing = "raw_text" not in segment_columns
+            refinement_flag_missing = "is_refined" not in segment_columns
+            if raw_text_missing:
+                self._connection.execute("ALTER TABLE segments ADD COLUMN raw_text TEXT")
+            if refinement_flag_missing:
+                self._connection.execute(
+                    "ALTER TABLE segments ADD COLUMN is_refined INTEGER NOT NULL DEFAULT 0"
+                )
+            if raw_text_missing:
+                self._connection.execute(
+                    "UPDATE segments SET raw_text = text WHERE raw_text IS NULL"
+                )
 
     def _import_legacy_json_once(self) -> None:
         if not self.legacy_json_file or not self.legacy_json_file.exists():
@@ -92,7 +111,15 @@ class SessionRepository:
             raw_payload = json.loads(self.legacy_json_file.read_text(encoding="utf-8"))
             if not isinstance(raw_payload, list):
                 raise ValueError("최상위 값이 배열이 아닙니다.")
-            sessions = [LectureSession.model_validate(item) for item in raw_payload]
+            sessions = []
+            for item in raw_payload:
+                material = item.get("material") if isinstance(item, dict) else None
+                if isinstance(material, dict):
+                    self._migrate_material_payload(
+                        material,
+                        float(item.get("duration_seconds") or 0),
+                    )
+                sessions.append(LectureSession.model_validate(item))
             session_ids = [session.id for session in sessions]
             if len(session_ids) != len(set(session_ids)):
                 raise ValueError("중복된 세션 ID가 있습니다.")
@@ -155,8 +182,9 @@ class SessionRepository:
         self._connection.executemany(
             """
             INSERT INTO segments(
-                id, session_id, position, start_seconds, speaker, text, confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, session_id, position, start_seconds, speaker, text, confidence,
+                raw_text, is_refined
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -167,21 +195,39 @@ class SessionRepository:
                     segment.speaker,
                     segment.text,
                     segment.confidence,
+                    segment.raw_text,
+                    int(segment.is_refined),
                 )
                 for position, segment in enumerate(session.segments)
             ],
         )
 
+    @staticmethod
+    def _migrate_material_payload(payload: dict, duration_seconds: float) -> None:
+        if int(payload.get("transcript_refinement_version") or 0) >= TRANSCRIPT_REFINEMENT_VERSION:
+            return
+        # 구버전 학습 항목은 원시 STT에서 추출됐을 수 있으므로 화면에서 제거합니다.
+        payload["learning_items"] = []
+        payload["keywords"] = []
+        payload["keyword_explanations"] = {}
+        payload["learning_items_processed_through_seconds"] = max(
+            float(payload.get("learning_items_processed_through_seconds") or 0),
+            duration_seconds,
+        )
+        payload["transcript_refinement_version"] = TRANSCRIPT_REFINEMENT_VERSION
+
     def _session_from_row(self, row: sqlite3.Row) -> LectureSession:
         segment_rows = self._connection.execute(
             """
-            SELECT id, start_seconds, speaker, text, confidence
+            SELECT id, start_seconds, speaker, text, confidence, raw_text, is_refined
             FROM segments
             WHERE session_id = ?
             ORDER BY position ASC
             """,
             (row["id"],),
         ).fetchall()
+        material_payload = json.loads(row["material_json"])
+        self._migrate_material_payload(material_payload, float(row["duration_seconds"]))
         return LectureSession(
             id=row["id"],
             title=row["title"],
@@ -191,7 +237,7 @@ class SessionRepository:
             created_at=row["created_at"],
             status=row["status"],
             duration_seconds=row["duration_seconds"],
-            material=StudyMaterial.model_validate_json(row["material_json"]),
+            material=StudyMaterial.model_validate(material_payload),
             segments=[TranscriptSegment.model_validate(dict(item)) for item in segment_rows],
         )
 

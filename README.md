@@ -4,8 +4,11 @@
 
 ## 현재 구현 범위
 
-- Zoom 브라우저 탭, YouTube 브라우저 탭 또는 마이크 음성을 최대 30초·5초 무음 단위로 실시간 STT
-- 최근 90초 문맥을 활용해 놓치기 쉬운 전문용어와 문장형 중요 개념을 구분하고 쉬운 한국어 설명을 즉시 생성
+- Zoom 브라우저 탭, YouTube 브라우저 탭 또는 마이크 음성을 최대 30초·5초 무음 단위로 STT하고 원시 전사는 내부에만 저장
+- 직전 60~90초 정제 문맥을 참고해 Qwen3가 `temperature=0`으로 현재 STT를 보수적으로 교정
+- 정제에 성공한 Clean Transcript만 30초 용어·중요 개념 탐지와 2분 요약 카드에 사용
+- 의미 없는 구간은 건너뛰고, 한 배치에 최대 2개 Topic만 생성하며 최근 Topic과 유사한 중복 요약 제거
+- 요약 생성 시각을 한국 표준시로 표시하고, LLM과 분리된 개인 필기를 좌우 말풍선으로 함께 저장
 - 수업에서 확인된 내용과 로컬 LLM 보충 설명을 분리한 챗봇 답변
 - 개인 기록을 `backend/data/reclass.sqlite3`에 저장해 서버 재시작 후에도 유지
 - 예전 `backend/data/sessions.json` 기록의 안전한 1회 자동 이관
@@ -19,10 +22,11 @@ Zoom/YouTube Chrome 탭 또는 마이크
           │ 브라우저 메모리에서 최대 30초 또는 5초 무음까지 오디오 조각 생성
           ▼
        Vue 3 ───────────────▶ FastAPI
-                                ├─ MLX Whisper: 한국어 STT
-                                ├─ Ollama + Qwen3 8B: 요약·챗봇
-                                └─ SQLite: 텍스트 학습 기록
-          ◀──── 전사·노트·근거·보충 설명 ────┘
+                                ├─ MLX Whisper: 30초 STT
+                                ├─ Qwen3 8B: 직전 60~90초 문맥 기반 전사 정제 (temperature=0)
+                                ├─ Qwen3 8B: Clean Transcript의 30초 개념 탐지·2분 요약·챗봇
+                                └─ SQLite: 원시·정제 전사와 학습 기록
+          ◀──── 요약 카드·노트·근거·보충 설명 ────┘
 ```
 
 YouTube URL은 영상 탭을 여는 링크로만 사용합니다. 백엔드는 URL에 접속하거나 `yt-dlp` 같은 도구로 미디어를 내려받지 않습니다. MLX Whisper가 파일 경로를 요구하므로 전송된 오디오 조각은 운영체제 임시 폴더에 잠깐 생성되지만, 변환 성공·실패와 관계없이 즉시 삭제됩니다.
@@ -119,7 +123,7 @@ Mac에서는 반드시 데스크톱 Chrome을 사용하세요. Safari와 Firefox
 3. 광고를 넘기고 강의 시작 지점에서 영상을 일시정지합니다.
 4. Re:Class 탭으로 돌아와 `YouTube 듣기`를 누릅니다.
 5. Chrome 공유 창에서 해당 YouTube **탭**을 선택하고 **탭 오디오 공유**를 켭니다.
-6. YouTube 탭에서 영상을 재생합니다. 계속 말하면 30초마다, 중간에 5초 이상 무음이 생기면 그 시점에 전사 구간이 추가됩니다.
+6. YouTube 탭에서 영상을 재생합니다. 원시 STT는 최대 30초 또는 5초 무음 단위로 내부 저장된 뒤 Qwen3로 정제됩니다. 정제된 전사에서 용어·중요 개념은 30초마다 갱신되고, 화면에는 2분마다 의미 있는 요약 카드가 추가됩니다.
 7. Re:Class의 `변환 종료` 또는 Chrome 공유 막대의 `공유 중지`를 누릅니다.
 8. 마지막 구간 업로드와 최종 요약이 끝난 뒤 챗봇 질문을 시험합니다.
 9. 서버를 `Ctrl+C`로 끄고 다시 실행해 같은 세션이 남아 있는지 확인합니다.
@@ -161,6 +165,8 @@ MLX_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3:8b
+LEARNING_ITEM_BATCH_SECONDS=30
+SUMMARY_BATCH_SECONDS=120
 DATABASE_FILE=data/reclass.sqlite3
 DATA_FILE=data/sessions.json
 ```
@@ -214,9 +220,10 @@ npm run build
 | --- | --- | --- |
 | `GET` | `/api/health` | STT·LLM 준비 상태 |
 | `GET/POST` | `/api/sessions` | 저장된 세션 조회·생성 |
-| `POST` | `/api/sessions/{id}/audio` | 실시간 오디오 조각 STT |
+| `POST` | `/api/sessions/{id}/audio` | 원시 STT 내부 저장 + Qwen 정제 + Clean Transcript의 30초 학습 항목 탐지·닫힌 2분 요약 |
 | `POST` | `/api/sessions/{id}/transcript` | 텍스트 수업 내용 추가 |
 | `POST` | `/api/sessions/{id}/summary` | AI 노트 재생성 |
+| `POST` | `/api/sessions/{id}/summary-notes` | 개인 필기 추가 |
 | `POST` | `/api/sessions/{id}/chat` | 수업 근거 + 사전학습 보충 답변 |
 
 공식 참고 문서: [FastAPI 파일 업로드](https://fastapi.tiangolo.com/tutorial/request-files/), [MDN getDisplayMedia](https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia), [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), [Ollama API](https://docs.ollama.com/api/introduction)

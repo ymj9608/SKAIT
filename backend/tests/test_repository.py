@@ -169,7 +169,13 @@ class SessionRepositoryTests(unittest.TestCase):
 
 
 class SessionSourceValidationTests(unittest.TestCase):
-    def test_youtube_session_requires_an_allowed_https_url(self) -> None:
+    def test_youtube_session_allows_no_url_and_validates_a_provided_url(self) -> None:
+        without_url = SessionCreate(
+            title="YouTube 수업",
+            source_type="youtube",
+        )
+        self.assertIsNone(without_url.source_url)
+
         payload = SessionCreate(
             title="YouTube 수업",
             source_type="youtube",

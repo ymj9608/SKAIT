@@ -33,12 +33,18 @@ export const api = {
   session: (id) => request(`/sessions/${id}`),
   createSession: (payload) =>
     request('/sessions', { method: 'POST', body: JSON.stringify(payload) }),
-  createDemo: () => request('/sessions/demo', { method: 'POST' }),
+  updateSession: (id, payload) =>
+    request(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   updateStatus: (id, payload) =>
     request(`/sessions/${id}/status`, { method: 'PATCH', body: JSON.stringify(payload) }),
   appendTranscript: (id, payload) =>
     request(`/sessions/${id}/transcript`, {
       method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateTranscript: (id, segmentId, payload) =>
+    request(`/sessions/${id}/transcript/${segmentId}`, {
+      method: 'PATCH',
       body: JSON.stringify(payload),
     }),
   uploadAudio: (id, blob, startSeconds) => {
@@ -49,10 +55,10 @@ export const api = {
     return request(`/sessions/${id}/audio`, { method: 'POST', body: data })
   },
   refreshSummary: (id) => request(`/sessions/${id}/summary`, { method: 'POST' }),
-  chat: (id, message) =>
+  chat: (id, message, history = []) =>
     request(`/sessions/${id}/chat`, {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, history }),
     }),
   deleteSession: (id) => request(`/sessions/${id}`, { method: 'DELETE' }),
 }

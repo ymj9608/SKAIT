@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clock3,
   MessageCircleQuestion,
+  PanelRightClose,
   Sparkles,
 } from '@lucide/vue'
 import { api } from '../services/api'
@@ -15,10 +16,8 @@ import { api } from '../services/api'
 const props = defineProps({
   session: { type: Object, default: null },
   llmReady: { type: Boolean, default: true },
-  llmProvider: { type: String, default: 'AI' },
-  llmModel: { type: String, default: '' },
 })
-const emit = defineEmits(['updated', 'error'])
+const emit = defineEmits(['updated', 'error', 'toggle'])
 
 const tab = ref('note')
 const question = ref('')
@@ -105,7 +104,7 @@ function resetChat() {
   messages.value = [
     {
       role: 'assistant',
-      text: '안녕하세요! 방금 수업에서 이해가 안 된 부분을 물어보세요. 전사 내용에서 근거를 찾아 쉽게 설명해 드릴게요.',
+      text: '안녕하세요! 수업 내용 중에서 이해가 안 된 부분을 물어보세요.',
       sources: [],
     },
   ]
@@ -138,11 +137,23 @@ async function sendQuestion(prompt) {
   }
   tab.value = 'chat'
   question.value = ''
-  messages.value.push({ role: 'user', text })
+  const history = messages.value
+    .slice(1)
+    .filter((message) => !message.failed)
+    .slice(-12)
+    .map((message) => ({
+      role: message.role,
+      content: [message.text, message.classContext, message.supplement]
+        .filter(Boolean)
+        .join('\n')
+        .slice(0, 4000),
+    }))
+  const userMessage = { role: 'user', text }
+  messages.value.push(userMessage)
   asking.value = true
   await scrollToBottom()
   try {
-    const result = await api.chat(props.session.id, text)
+    const result = await api.chat(props.session.id, text, history)
     messages.value.push({
       role: 'assistant',
       text: result.answer,
@@ -152,8 +163,14 @@ async function sendQuestion(prompt) {
       sources: result.sources,
     })
   } catch (error) {
+    userMessage.failed = true
     emit('error', error.message)
-    messages.value.push({ role: 'assistant', text: '답변을 만들지 못했어요. 잠시 후 다시 시도해 주세요.', sources: [] })
+    messages.value.push({
+      role: 'assistant',
+      text: '답변을 만들지 못했어요. 잠시 후 다시 시도해 주세요.',
+      sources: [],
+      failed: true,
+    })
   } finally {
     asking.value = false
     await scrollToBottom()
@@ -177,13 +194,15 @@ async function sendQuestion(prompt) {
       @dblclick="resetPanelWidth"
     />
     <header class="coach-header">
-      <div class="coach-title">
-        <span class="ai-orb"><Sparkles :size="18" /></span>
-        <div><strong>AI Study Coach</strong><span>수업 전용 튜터 · {{ llmProvider }}</span></div>
+      <div class="coach-heading">
+        <button class="coach-panel-toggle" aria-label="AI 도우미 숨기기" title="AI 도우미 숨기기" @click="emit('toggle')">
+          <PanelRightClose :size="17" />
+        </button>
+        <div class="coach-title">
+          <span class="ai-orb"><Sparkles :size="18" /></span>
+          <div><strong>AI 도우미</strong><span>수업 전용 튜터</span></div>
+        </div>
       </div>
-      <span class="ready-badge" :class="{ 'ready-badge--off': !llmReady }" :title="llmModel || llmProvider">
-        <i /> {{ llmReady ? '준비됨' : '설정 필요' }}
-      </span>
     </header>
 
     <div class="coach-tabs" role="tablist">
@@ -319,7 +338,7 @@ async function sendQuestion(prompt) {
         <textarea
           v-model="question"
           rows="1"
-          :placeholder="llmReady ? '수업 내용에 대해 무엇이든 물어보세요…' : 'Ollama 모델을 준비하는 중입니다…'"
+          :placeholder="llmReady ? '질문을 입력하세요…' : 'AI 튜터를 준비하는 중입니다…'"
           :disabled="!llmReady"
           @keydown.enter.exact.prevent="sendQuestion()"
         />

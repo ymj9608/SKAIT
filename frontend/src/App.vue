@@ -1,18 +1,15 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  AudioLines,
   CalendarDays,
-  ChevronDown,
   CircleStop,
   Cloud,
-  ExternalLink,
   HardDrive,
   LoaderCircle,
   Menu,
-  Mic,
   MonitorPlay,
   MonitorUp,
+  PanelRightOpen,
   Radio,
   Sparkles,
   X,
@@ -34,13 +31,12 @@ const health = ref({
   llm_model: null,
 })
 const loading = ref(true)
+const loadFailed = ref(false)
 const sidebarOpen = ref(false)
+const coachOpen = ref(true)
 const createModalOpen = ref(false)
 const newTitle = ref('')
-const newCourse = ref('SKALA Zoom 수업')
 const newSourceType = ref('zoom')
-const newSourceUrl = ref('')
-const captureSource = ref('screen')
 const isFinalizing = ref(false)
 const toast = ref(null)
 let toastTimer = null
@@ -98,11 +94,6 @@ const providerLabel = computed(() => {
   return names[health.value.stt_provider] || health.value.stt_provider
 })
 
-const llmProviderLabel = computed(() => {
-  const names = { local: '로컬 추출식', huggingface: 'Hugging Face', ollama: 'Ollama' }
-  return names[health.value.llm_provider] || health.value.llm_provider
-})
-
 async function refreshHealth() {
   try {
     health.value = await api.health()
@@ -113,18 +104,14 @@ async function refreshHealth() {
 
 async function loadApp() {
   loading.value = true
+  loadFailed.value = false
   try {
     const [healthResult, sessionResult] = await Promise.all([api.health(), api.sessions()])
     health.value = healthResult
     sessions.value = sessionResult
-    if (sessions.value.length) {
-      activeSession.value = sessions.value[0]
-    } else {
-      const demo = await api.createDemo()
-      sessions.value = [demo]
-      activeSession.value = demo
-    }
+    activeSession.value = sessions.value[0] || null
   } catch (error) {
+    loadFailed.value = true
     showToast(`백엔드에 연결할 수 없습니다. ${error.message}`)
   } finally {
     loading.value = false
@@ -146,64 +133,68 @@ async function selectSession(id) {
   }
 }
 
+async function renameSession({ id, title }) {
+  if (
+    activeSession.value?.id === id
+    && (recorder.isRecording.value || recorder.isProcessing.value || isFinalizing.value)
+  ) {
+    showToast('현재 수업 처리를 마친 뒤 제목을 수정해 주세요.', 'info')
+    return
+  }
+  try {
+    replaceSession(await api.updateSession(id, { title }))
+    showToast('수업 제목을 수정했습니다.', 'success')
+  } catch (error) {
+    showToast(error.message)
+  }
+}
+
+async function removeSession(id) {
+  if (
+    recordingSessionId === id
+    || (
+      activeSession.value?.id === id
+      && (recorder.isRecording.value || recorder.isProcessing.value || isFinalizing.value)
+    )
+  ) {
+    showToast('현재 처리 중인 수업은 삭제할 수 없습니다.', 'info')
+    return
+  }
+  try {
+    await api.deleteSession(id)
+    const wasActive = activeSession.value?.id === id
+    sessions.value = sessions.value.filter((session) => session.id !== id)
+    if (wasActive) activeSession.value = sessions.value[0] || null
+    showToast('수업을 삭제했습니다.', 'success')
+  } catch (error) {
+    showToast(error.message)
+  }
+}
+
 function openCreateModal() {
   if (recorder.isRecording.value || recorder.isProcessing.value || isFinalizing.value) {
     showToast('현재 음성 구간 저장과 요약을 마친 뒤 새 학습을 시작해 주세요.', 'info')
     return
   }
   newTitle.value = `새 수업 · ${new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date())}`
-  newCourse.value = 'SKALA Zoom 수업'
   newSourceType.value = 'zoom'
-  newSourceUrl.value = ''
   createModalOpen.value = true
   sidebarOpen.value = false
 }
 
 function chooseNewSource(sourceType) {
   newSourceType.value = sourceType
-  const dateLabel = new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date())
-  if (sourceType === 'youtube') {
-    newTitle.value = `YouTube 강의 · ${dateLabel}`
-    newCourse.value = 'YouTube 강의 테스트'
-  } else {
-    newTitle.value = `새 수업 · ${dateLabel}`
-    newCourse.value = 'SKALA Zoom 수업'
-  }
-}
-
-function normalizeYoutubeUrl(value) {
-  try {
-    const url = new URL(value.trim())
-    const allowedHosts = new Set([
-      'youtube.com',
-      'www.youtube.com',
-      'm.youtube.com',
-      'music.youtube.com',
-      'youtu.be',
-    ])
-    if (url.protocol !== 'https:' || !allowedHosts.has(url.hostname.toLowerCase())) return null
-    return url.href
-  } catch {
-    return null
-  }
 }
 
 async function createSession() {
   if (!newTitle.value.trim()) return
-  const youtubeUrl = newSourceType.value === 'youtube' ? normalizeYoutubeUrl(newSourceUrl.value) : null
-  if (newSourceType.value === 'youtube' && !youtubeUrl) {
-    showToast('https://youtube.com 또는 https://youtu.be 형식의 영상 주소를 입력해 주세요.')
-    return
-  }
   try {
     const session = await api.createSession({
       title: newTitle.value.trim(),
-      course_name: newCourse.value.trim() || 'SKALA Zoom 수업',
+      course_name: newSourceType.value === 'youtube' ? 'YouTube' : 'Zoom',
       source_type: newSourceType.value,
-      source_url: youtubeUrl,
     })
     replaceSession(session)
-    captureSource.value = 'screen'
     createModalOpen.value = false
     showToast('새 학습 세션을 만들었습니다.', 'success')
   } catch (error) {
@@ -258,7 +249,7 @@ async function toggleRecording() {
 
   try {
     recordingSessionId = activeSession.value.id
-    await recorder.start(captureSource.value, activeSession.value.duration_seconds || 0)
+    await recorder.start('screen', activeSession.value.duration_seconds || 0)
     replaceSession(
       await api.updateStatus(activeSession.value.id, {
         status: 'recording',
@@ -284,7 +275,21 @@ async function appendText(text) {
           : activeSession.value.duration_seconds,
       }),
     )
-    showToast('전사 내용과 AI 노트를 업데이트했습니다.', 'success')
+    showToast('수업 내용과 AI 노트를 업데이트했습니다.', 'success')
+    return true
+  } catch (error) {
+    showToast(error.message)
+    return false
+  }
+}
+
+async function updateText(segmentId, text) {
+  if (!activeSession.value) return false
+  try {
+    replaceSession(
+      await api.updateTranscript(activeSession.value.id, segmentId, { text }),
+    )
+    showToast('수업 내용과 AI 노트를 업데이트했습니다.', 'success')
     return true
   } catch (error) {
     showToast(error.message)
@@ -301,12 +306,6 @@ onBeforeUnmount(() => {
   clearInterval(healthTimer)
 })
 
-watch(
-  () => activeSession.value?.source_type,
-  (sourceType) => {
-    if (sourceType === 'youtube') captureSource.value = 'screen'
-  },
-)
 </script>
 
 <template>
@@ -317,6 +316,8 @@ watch(
       :open="sidebarOpen"
       @select="selectSession"
       @new="openCreateModal"
+      @rename="renameSession"
+      @delete="removeSession"
       @close="sidebarOpen = false"
     />
 
@@ -326,10 +327,6 @@ watch(
           <button class="mobile-menu" aria-label="수업 목록 열기" @click="sidebarOpen = true">
             <Menu :size="21" />
           </button>
-          <div class="course-path">
-            <span>MY CLASS</span>
-            <strong>{{ activeSession?.course_name || '학습 공간' }}</strong>
-          </div>
         </div>
 
         <div class="recording-toolbar">
@@ -338,16 +335,6 @@ watch(
             <span>{{ providerLabel }}</span>
             <i :class="{ off: !health.stt_ready }" />
           </div>
-          <label class="source-select" :class="{ disabled: recorder.isRecording.value || isYoutubeSession }">
-            <MonitorPlay v-if="isYoutubeSession" :size="16" />
-            <MonitorUp v-else-if="captureSource === 'screen'" :size="16" />
-            <Mic v-else :size="16" />
-            <select v-model="captureSource" :disabled="recorder.isRecording.value || isYoutubeSession">
-              <option value="screen">{{ isYoutubeSession ? 'YouTube 탭 오디오' : 'Zoom 탭 오디오' }}</option>
-              <option v-if="!isYoutubeSession" value="microphone">마이크</option>
-            </select>
-            <ChevronDown :size="14" />
-          </label>
           <div class="record-time" :class="{ live: recorder.isRecording.value }">
             <span><i /> {{ recorder.isRecording.value ? 'REC' : 'READY' }}</span>
             <strong>{{ recorder.elapsedLabel.value }}</strong>
@@ -365,38 +352,11 @@ watch(
         </div>
       </header>
 
-      <div v-if="activeSession" class="content-grid">
+      <div v-if="activeSession" class="content-grid" :class="{ 'content-grid--coach-closed': !coachOpen }">
         <section class="lesson-column">
           <div class="lesson-heading">
-            <div>
-              <div class="lesson-meta">
-                <span class="class-badge" :class="{ 'class-badge--youtube': isYoutubeSession }">
-                  {{ isYoutubeSession ? 'YOUTUBE LIVE' : 'LIVE CLASS' }}
-                </span>
-                <span><CalendarDays :size="14" /> {{ sessionDate }}</span>
-                <span><AudioLines :size="14" /> {{ activeSession.segments.length }}개 음성 구간</span>
-              </div>
-              <h1>{{ activeSession.title }}</h1>
-              <p>{{ isYoutubeSession ? '영상은 내려받지 않고, 재생되는 탭 음성만 실시간으로 정리합니다.' : '듣는 동안 핵심은 AI가 정리할게요. 지금은 교수님의 설명에 집중하세요.' }}</p>
-            </div>
-            <div class="focus-mark" aria-hidden="true">
-              <span><Sparkles :size="21" /></span>
-              <small>FOCUS<br />MODE</small>
-            </div>
-          </div>
-
-          <div v-if="captureSource === 'screen' && !recorder.isRecording.value" class="audio-guide" :class="{ 'audio-guide--youtube': isYoutubeSession }">
-            <MonitorPlay v-if="isYoutubeSession" :size="18" />
-            <MonitorUp v-else :size="17" />
-            <span v-if="isYoutubeSession">
-              <strong>① 강의 열기·광고 넘기기 → ② YouTube 듣기 → ③ 해당 Chrome 탭 선택 → ④ 탭 오디오 공유 켜기 → ⑤ 영상 재생</strong>
-              <small>최대 30초 음성 조각은 5초 무음 또는 길이 제한에 도달하면 STT 후 폐기되고, 텍스트·요약만 로컬 DB에 저장됩니다.</small>
-            </span>
-            <span v-else>녹음 버튼을 누른 뒤 Zoom이 열린 <strong>브라우저 탭</strong>을 선택하고, “탭 오디오 공유”를 켜 주세요.</span>
-            <a v-if="isYoutubeSession && activeSession.source_url" :href="activeSession.source_url" target="_blank" rel="noopener noreferrer">
-              강의 열기 <ExternalLink :size="13" />
-            </a>
-            <button v-else @click="captureSource = 'microphone'">마이크로 듣기</button>
+            <h1>{{ activeSession.title }}</h1>
+            <p class="lesson-date"><CalendarDays :size="14" /> {{ sessionDate }}</p>
           </div>
 
           <TranscriptPanel
@@ -404,24 +364,43 @@ watch(
             :recording="recorder.isRecording.value"
             :processing="recorder.isProcessing.value"
             :append-text="appendText"
+            :update-text="updateText"
           />
         </section>
 
+        <button
+          v-if="!coachOpen"
+          class="coach-reopen"
+          aria-label="AI 도우미 펼치기"
+          title="AI 도우미 펼치기"
+          @click="coachOpen = true"
+        >
+          <PanelRightOpen :size="17" />
+        </button>
+
         <CoachPanel
+          v-show="coachOpen"
           :session="activeSession"
           :llm-ready="health.llm_ready"
-          :llm-provider="llmProviderLabel"
-          :llm-model="health.llm_model"
+          @toggle="coachOpen = false"
           @updated="replaceSession"
           @error="showToast"
         />
       </div>
 
       <div v-else-if="!loading" class="connection-empty">
-        <span><Cloud :size="34" /></span>
-        <h1>학습 서버를 기다리고 있어요</h1>
-        <p>FastAPI 서버를 실행한 뒤 다시 연결해 주세요.</p>
-        <button @click="loadApp">다시 연결</button>
+        <template v-if="loadFailed">
+          <span><Cloud :size="34" /></span>
+          <h1>학습 서버를 기다리고 있어요</h1>
+          <p>FastAPI 서버를 실행한 뒤 다시 연결해 주세요.</p>
+          <button @click="loadApp">다시 연결</button>
+        </template>
+        <template v-else>
+          <span><Sparkles :size="34" /></span>
+          <h1>아직 수업이 없어요</h1>
+          <p>새 학습을 시작하면 이곳에 수업 내용이 표시됩니다.</p>
+          <button @click="openCreateModal">새 학습 시작</button>
+        </template>
       </div>
     </main>
 
@@ -435,32 +414,19 @@ watch(
       <div v-if="createModalOpen" class="modal-backdrop" @click.self="createModalOpen = false">
         <form class="create-modal" @submit.prevent="createSession">
           <button type="button" class="modal-close" aria-label="닫기" @click="createModalOpen = false"><X :size="20" /></button>
-          <span class="modal-icon"><MonitorPlay v-if="newSourceType === 'youtube'" :size="22" /><Sparkles v-else :size="22" /></span>
-          <p class="modal-kicker">NEW STUDY SESSION</p>
-          <h2>어떤 수업을 들을까요?</h2>
-          <p class="modal-description">Zoom 수업 또는 YouTube 실시간 테스트 중 학습 방식을 선택하세요.</p>
           <div class="source-choice" role="group" aria-label="수업 소스 선택">
             <button type="button" :class="{ active: newSourceType === 'zoom' }" @click="chooseNewSource('zoom')">
-              <MonitorUp :size="17" /><span><strong>Zoom / 마이크</strong><small>실시간 수업 듣기</small></span>
+              <MonitorUp :size="17" /> Zoom
             </button>
             <button type="button" :class="{ active: newSourceType === 'youtube' }" @click="chooseNewSource('youtube')">
-              <MonitorPlay :size="17" /><span><strong>YouTube</strong><small>탭 오디오 테스트</small></span>
+              <MonitorPlay :size="17" /> YouTube
             </button>
           </div>
           <label>
             <span>수업 제목</span>
             <input v-model="newTitle" maxlength="100" autofocus placeholder="예: Spring Security 기초" />
           </label>
-          <label>
-            <span>과정명</span>
-            <input v-model="newCourse" maxlength="100" placeholder="예: SKALA 백엔드" />
-          </label>
-          <label v-if="newSourceType === 'youtube'">
-            <span>YouTube 영상 주소</span>
-            <input v-model="newSourceUrl" type="url" maxlength="2048" required placeholder="https://youtu.be/..." />
-          </label>
-          <p v-if="newSourceType === 'youtube'" class="youtube-privacy-note">서버가 영상을 다운로드하거나 URL에 접속하지 않습니다. Chrome에서 사용자가 공유한 탭의 재생 음성만 처리합니다.</p>
-          <button class="modal-submit" type="submit" :disabled="!newTitle.trim() || (newSourceType === 'youtube' && !newSourceUrl.trim())">
+          <button class="modal-submit" type="submit" :disabled="!newTitle.trim()">
             학습 공간 만들기
           </button>
         </form>

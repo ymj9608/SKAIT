@@ -9,6 +9,8 @@ from .repository import SessionRepository
 from .schemas import (
     ChatRequest,
     ChatResponse,
+    ChatMessage,
+    ConversationMessage,
     HealthResponse,
     LectureSession,
     SessionCreate,
@@ -23,14 +25,17 @@ from .schemas import (
     TranscriptCreate,
     TranscriptSegment,
     TranscriptUpdate,
+    utc_now,
 )
 from .services.pdf import extract_pdf_text
 from .services.stt import SpeechToText, build_stt
 from .services.study import (
     StudyAssistant,
     build_study_assistant,
+    build_quiz_context,
     format_timestamp,
     merge_learning_items,
+    quiz_question_count,
     remove_duplicate_topics,
     summary_card_text,
 )
@@ -308,8 +313,16 @@ async def process_summary_batches(
 
 async def rebuild_study_material(session: LectureSession) -> None:
     """원문 보정 뒤 30초 학습 항목과 2분 요약 카드를 일관되게 다시 만듭니다."""
-    personal_notes = list(session.material.summary_notes)
-    session.material = StudyMaterial(summary_notes=personal_notes)
+    personal_notes = [note.model_copy(deep=True) for note in session.material.summary_notes]
+    quiz_questions = [
+        question.model_copy(deep=True)
+        for question in session.material.quiz_questions
+    ]
+    session.material = StudyMaterial(
+        summary_notes=personal_notes,
+        quiz_questions=quiz_questions,
+        quiz_generated_at=session.material.quiz_generated_at,
+    )
     await process_summary_batches(
         session,
         session.duration_seconds,
@@ -615,16 +628,72 @@ async def add_summary_note(
     return repository().save(session)
 
 
+@app.post("/api/sessions/{session_id}/quiz", response_model=LectureSession)
+async def generate_quiz(session_id: str) -> LectureSession:
+    session = get_session_or_404(session_id)
+    summary_context = build_quiz_context(
+        session.material,
+        randomize_sections=True,
+    )
+    if not summary_context:
+        raise HTTPException(
+            status_code=409,
+            detail="수업 내용이 없으므로 퀴즈를 생성할 수 없습니다.",
+        )
+    try:
+        questions = await assistant_or_503().generate_quiz(
+            summary_context,
+            quiz_question_count(summary_context),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    # 생성 중 녹음·요약·대화가 갱신될 수 있으므로 최신 세션에 퀴즈만 반영합니다.
+    latest_session = get_session_or_404(session_id)
+    latest_session.material.quiz_questions = questions
+    latest_session.material.quiz_generated_at = utc_now()
+    return repository().save(latest_session)
+
+
 @app.post("/api/sessions/{session_id}/chat", response_model=ChatResponse)
 async def chat(session_id: str, payload: ChatRequest) -> ChatResponse:
     session = get_session_or_404(session_id)
     clean_segments = [segment for segment in session.segments if segment.is_refined]
-    return await assistant_or_503().answer(
+    stored_history = [
+        ChatMessage(
+            role=message.role,
+            content="\n".join(
+                part
+                for part in (
+                    message.text,
+                    message.class_context,
+                    message.supplementary_explanation,
+                )
+                if part
+            )[:4_000],
+        )
+        for message in session.chat_messages[-12:]
+    ]
+    result = await assistant_or_503().answer(
         payload.message,
         clean_segments,
         session.material,
-        payload.history,
+        payload.history or stored_history,
     )
+    repository().append_chat_messages(
+        session_id,
+        [
+            ConversationMessage(role="user", text=payload.message),
+            ConversationMessage(
+                role="assistant",
+                text=result.answer,
+                class_context=result.class_context,
+                supplementary_explanation=result.supplementary_explanation,
+                knowledge_scope=result.knowledge_scope,
+                sources=result.sources,
+            ),
+        ],
+    )
+    return result
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204)

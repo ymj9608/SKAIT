@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import json
 import sqlite3
 from pathlib import Path
 from threading import RLock
 
-from .schemas import LectureSession, StudyMaterial, TranscriptSegment
+from .schemas import ConversationMessage, LectureSession, StudyMaterial, TranscriptSegment
 
 
 LEGACY_IMPORT_MARKER = "legacy_json_import_v1"
@@ -75,6 +77,25 @@ class SessionRepository:
                     ON sessions(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_segments_session_position
                     ON segments(session_id, position);
+
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL
+                        REFERENCES sessions(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL CHECK(position >= 0),
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    text TEXT NOT NULL,
+                    class_context TEXT,
+                    supplementary_explanation TEXT,
+                    knowledge_scope TEXT
+                        CHECK(knowledge_scope IN ('class_only', 'class_plus_general')),
+                    sources_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(session_id, position)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_session_position
+                    ON chat_messages(session_id, position);
 
                 CREATE TABLE IF NOT EXISTS repository_metadata (
                     key TEXT PRIMARY KEY,
@@ -245,6 +266,16 @@ class SessionRepository:
             """,
             (row["id"],),
         ).fetchall()
+        chat_rows = self._connection.execute(
+            """
+            SELECT id, role, text, class_context, supplementary_explanation,
+                   knowledge_scope, sources_json, created_at
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY position ASC
+            """,
+            (row["id"],),
+        ).fetchall()
         material_payload = json.loads(row["material_json"])
         self._migrate_material_payload(material_payload, float(row["duration_seconds"]))
         return LectureSession(
@@ -260,6 +291,19 @@ class SessionRepository:
             reference_text=row["reference_text"],
             material=StudyMaterial.model_validate(material_payload),
             segments=[TranscriptSegment.model_validate(dict(item)) for item in segment_rows],
+            chat_messages=[
+                ConversationMessage(
+                    id=item["id"],
+                    role=item["role"],
+                    text=item["text"],
+                    class_context=item["class_context"],
+                    supplementary_explanation=item["supplementary_explanation"],
+                    knowledge_scope=item["knowledge_scope"],
+                    sources=json.loads(item["sources_json"]),
+                    created_at=item["created_at"],
+                )
+                for item in chat_rows
+            ],
         )
 
     def list(self) -> list[LectureSession]:
@@ -281,6 +325,50 @@ class SessionRepository:
         with self._lock, self._connection:
             self._upsert_session(snapshot)
         return snapshot.model_copy(deep=True)
+
+    def append_chat_messages(
+        self,
+        session_id: str,
+        messages: list[ConversationMessage],
+    ) -> None:
+        if not messages:
+            return
+        snapshots = [message.model_copy(deep=True) for message in messages]
+        with self._lock, self._connection:
+            next_position = self._connection.execute(
+                """
+                SELECT COALESCE(MAX(position) + 1, 0)
+                FROM chat_messages
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()[0]
+            self._connection.executemany(
+                """
+                INSERT INTO chat_messages(
+                    id, session_id, position, role, text, class_context,
+                    supplementary_explanation, knowledge_scope, sources_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        message.id,
+                        session_id,
+                        next_position + offset,
+                        message.role,
+                        message.text,
+                        message.class_context,
+                        message.supplementary_explanation,
+                        message.knowledge_scope,
+                        json.dumps(
+                            [source.model_dump(mode="json") for source in message.sources],
+                            ensure_ascii=False,
+                        ),
+                        message.created_at.isoformat(),
+                    )
+                    for offset, message in enumerate(snapshots)
+                ],
+            )
 
     def delete(self, session_id: str) -> bool:
         with self._lock, self._connection:

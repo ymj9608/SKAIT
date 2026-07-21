@@ -8,11 +8,13 @@ from pydantic import ValidationError
 
 from app.repository import LEGACY_IMPORT_MARKER, SessionRepository
 from app.schemas import (
+    ConversationMessage,
     LearningItem,
     LectureSession,
     SessionCreate,
     StudyMaterial,
     SummaryNote,
+    SourceReference,
     TranscriptSegment,
 )
 
@@ -64,6 +66,51 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
 
 
 class SessionRepositoryTests(unittest.TestCase):
+    def test_chat_messages_survive_session_saves_and_restarts(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "reclass.sqlite3"
+            session = sample_session()
+            repository = SessionRepository(database)
+            repository.save(session)
+            repository.append_chat_messages(
+                session.id,
+                [
+                    ConversationMessage(role="user", text="콜백 함수가 뭐야?"),
+                    ConversationMessage(
+                        role="assistant",
+                        text="다른 함수에 전달되는 함수입니다.",
+                        class_context="수업에서 콜백 함수를 설명했습니다.",
+                        knowledge_scope="class_only",
+                        sources=[
+                            SourceReference(
+                                segment_id=session.segments[1].id,
+                                start_seconds=30,
+                                speaker="강사",
+                                excerpt=session.segments[1].text,
+                            )
+                        ],
+                    ),
+                ],
+            )
+
+            # 일반 수업 저장은 별도 대화 테이블을 덮어쓰지 않아야 합니다.
+            repository.save(repository.get(session.id))
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.get(session.id)
+            reopened.close()
+
+            self.assertEqual(
+                [message.role for message in restored.chat_messages],
+                ["user", "assistant"],
+            )
+            self.assertEqual(restored.chat_messages[0].text, "콜백 함수가 뭐야?")
+            self.assertEqual(
+                restored.chat_messages[1].sources[0].segment_id,
+                session.segments[1].id,
+            )
+
     def test_old_raw_segments_and_learning_items_are_migrated_safely(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "reclass.sqlite3"

@@ -239,6 +239,13 @@ class StudyServiceTests(unittest.TestCase):
         sources = rank_sources("Pydantic은 무엇을 검증하나요?", self.segments)
         self.assertEqual(sources[0].start_seconds, 42)
 
+    def test_rank_sources_returns_empty_without_matching_lecture_content(self) -> None:
+        sources = rank_sources("양자역학의 불확정성 원리를 설명해줘", self.segments)
+        self.assertEqual(sources, [])
+
+    def test_rank_sources_returns_empty_for_question_without_search_terms(self) -> None:
+        self.assertEqual(rank_sources("왜?", self.segments), [])
+
     def test_reference_context_selects_relevant_pdf_section(self) -> None:
         reference = "\n".join(
             [
@@ -281,6 +288,24 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(result.knowledge_scope, "class_plus_general")
         self.assertIn("언급", result.class_context)
         self.assertIn("this", result.supplementary_explanation)
+
+    def test_huggingface_answer_hides_sources_when_question_is_not_answered_in_class(self) -> None:
+        assistant = object.__new__(HuggingFaceStudyAssistant)
+        assistant.model = "test-model"
+        assistant._chat = lambda messages, max_tokens=700: """{
+          "has_class_evidence": false,
+          "class_context": "수업에서는 FastAPI를 언급했지만 배포 방법은 다루지 않았습니다.",
+          "supplementary_explanation": "일반적인 FastAPI 배포 방법을 설명합니다.",
+          "answer": "수업 밖의 일반 지식으로 답변합니다."
+        }"""
+        result = asyncio.run(
+            assistant.answer(
+                "FastAPI의 배포 방법을 알려줘",
+                self.segments,
+                extractive_summary(self.segments),
+            )
+        )
+        self.assertEqual(result.sources, [])
 
     def test_local_apple_providers_are_valid_settings(self) -> None:
         settings = Settings(

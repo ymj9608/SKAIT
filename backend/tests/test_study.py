@@ -19,6 +19,7 @@ from app.services.study import (
     build_batch_summary_messages,
     build_transcript_refinement_messages,
     build_learning_item_detection_messages,
+    build_reference_context,
     build_recent_learning_context,
     build_summary_context,
     build_study_assistant,
@@ -207,6 +208,27 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(captured["max_tokens"], 900)
         self.assertIn("직전 요약", captured["messages"][-1]["content"])
 
+    def test_batch_summary_uses_pdf_only_as_optional_term_reference(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
+        captured = {}
+
+        def fake_chat(messages, max_tokens=700):
+            captured.update({"messages": messages, "max_tokens": max_tokens})
+            return '{"has_meaningful_content":false,"topics":[]}'
+
+        assistant._chat = fake_chat
+        asyncio.run(
+            assistant.summarize_batch(
+                [TranscriptSegment(text="트렌 세트로 모델을 학습합니다.")],
+                reference_text="[PDF 2페이지] train set으로 모델을 학습합니다.",
+            )
+        )
+
+        prompt = captured["messages"][-1]["content"]
+        self.assertIn("<PDF_REFERENCE>", prompt)
+        self.assertIn("train set", prompt)
+        self.assertIn("not lecture evidence", captured["messages"][0]["content"])
+
     def test_summary_contains_material(self) -> None:
         material = extractive_summary(self.segments)
         self.assertTrue(material.summary)
@@ -216,6 +238,17 @@ class StudyServiceTests(unittest.TestCase):
     def test_rank_sources_prefers_matching_segment(self) -> None:
         sources = rank_sources("Pydantic은 무엇을 검증하나요?", self.segments)
         self.assertEqual(sources[0].start_seconds, 42)
+
+    def test_reference_context_selects_relevant_pdf_section(self) -> None:
+        reference = "\n".join(
+            [
+                "[PDF 1페이지] 머신러닝 수업 자료",
+                "[PDF 2페이지] 데이터셋은 train set과 test set으로 나눕니다.",
+                "[PDF 3페이지] 배포와 모니터링을 설명합니다.",
+            ]
+        )
+        context = build_reference_context(reference, "데이터셋을 학습용과 평가용으로 나눕니다.")
+        self.assertIn("train set", context)
 
     def test_local_answer_is_marked_as_class_only(self) -> None:
         assistant = LocalStudyAssistant()
@@ -348,6 +381,62 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(material.keywords, [])
         self.assertEqual(material.keyword_explanations, {})
         self.assertEqual(material.learning_items, [])
+
+    def test_pdf_reference_enables_short_summary_term_correction(self) -> None:
+        assistant = object.__new__(HuggingFaceStudyAssistant)
+        captured = {}
+
+        def fake_chat(messages, max_tokens=700):
+            captured.update({"messages": messages, "max_tokens": max_tokens})
+            return """{
+              "summary": "데이터를 train set과 test set으로 나누는 내용입니다.",
+              "key_points": ["train set은 모델 학습에 사용합니다."],
+              "learning_items": [{
+                "type": "term",
+                "title": "train set",
+                "explanation": "모델을 학습시키는 데이터 모음입니다."
+              }],
+              "review_questions": ["train set의 역할은 무엇인가요?"]
+            }"""
+
+        assistant._chat = fake_chat
+        material = asyncio.run(
+            assistant.summarize(
+                [TranscriptSegment(text="트렌드 셋으로 모델을 학습합니다.")],
+                "[PDF 4페이지] train set은 모델 학습에 사용하고 test set은 평가에 사용합니다.",
+            )
+        )
+        prompt = captured["messages"][-1]["content"]
+        self.assertIn("<REFERENCE_MATERIAL>", prompt)
+        self.assertIn("train set", prompt)
+        self.assertIn("train set", material.summary)
+
+    def test_pdf_reference_corrects_only_supported_stt_terms(self) -> None:
+        assistant = object.__new__(HuggingFaceStudyAssistant)
+        captured = {}
+
+        def fake_chat(messages, max_tokens=700):
+            captured.update({"messages": messages, "max_tokens": max_tokens})
+            return '{"corrected_text":"train set으로 모델을 학습합니다."}'
+
+        assistant._chat = fake_chat
+        corrected = asyncio.run(
+            assistant.correct_transcript(
+                "트렌드 셋으로 모델을 학습합니다.",
+                "[PDF 2페이지] train set으로 모델을 학습합니다.",
+                "앞에서 데이터를 학습용과 평가용으로 분리한다고 설명했습니다.",
+            )
+        )
+        self.assertEqual(corrected, "train set으로 모델을 학습합니다.")
+        self.assertIn("Do not summarize", captured["messages"][-1]["content"])
+        self.assertIn("PREVIOUS_LECTURE_CONTEXT", captured["messages"][-1]["content"])
+
+    def test_transcript_is_unchanged_without_pdf_reference(self) -> None:
+        assistant = object.__new__(HuggingFaceStudyAssistant)
+        assistant._chat = lambda *args: self.fail("PDF가 없으면 보정 모델을 호출하면 안 됩니다.")
+        original = "트렌드 셋으로 모델을 학습합니다."
+        corrected = asyncio.run(assistant.correct_transcript(original, None))
+        self.assertEqual(corrected, original)
 
     def test_learning_item_prompt_separates_context_and_uses_icl(self) -> None:
         messages = build_learning_item_detection_messages(

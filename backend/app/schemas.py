@@ -82,6 +82,44 @@ class SummaryNoteCreate(BaseModel):
         return self
 
 
+class SummaryCardUpdate(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    topics: list[SummaryTopic] = Field(min_length=1, max_length=2)
+
+    @model_validator(mode="after")
+    def normalize_topics(self) -> "SummaryCardUpdate":
+        for topic in self.topics:
+            topic.title = topic.title.strip()
+            topic.summary = topic.summary.strip()
+            topic.key_points = [
+                point.strip()
+                for point in topic.key_points
+                if point.strip()
+            ]
+            if not topic.title or not topic.summary:
+                raise ValueError("요약 제목과 내용을 입력해 주세요.")
+        return self
+
+
+class SummaryNoteUpdate(SummaryNoteCreate):
+    id: str = Field(min_length=1, max_length=64)
+
+
+class SummaryBatchUpdate(BaseModel):
+    cards: list[SummaryCardUpdate] = Field(default_factory=list, max_length=500)
+    notes: list[SummaryNoteUpdate] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_updates(self) -> "SummaryBatchUpdate":
+        if not self.cards and not self.notes:
+            raise ValueError("수정할 요약 내용을 입력해 주세요.")
+        card_ids = [item.id for item in self.cards]
+        note_ids = [item.id for item in self.notes]
+        if len(card_ids) != len(set(card_ids)) or len(note_ids) != len(set(note_ids)):
+            raise ValueError("같은 요약을 중복해서 수정할 수 없습니다.")
+        return self
+
+
 class StudyMaterial(BaseModel):
     summary: str = EMPTY_SUMMARY_TEXT
     key_points: list[str] = Field(default_factory=list)
@@ -105,6 +143,8 @@ class LectureSession(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     status: Literal["ready", "recording", "completed"] = "ready"
     duration_seconds: float = Field(default=0, ge=0)
+    reference_name: str | None = Field(default=None, max_length=255)
+    reference_text: str | None = Field(default=None, exclude=True)
     segments: list[TranscriptSegment] = Field(default_factory=list)
     material: StudyMaterial = Field(default_factory=StudyMaterial)
 
@@ -207,6 +247,21 @@ class TranscriptUpdate(BaseModel):
         self.text = self.text.strip()
         if not self.text:
             raise ValueError("수업 내용을 입력해 주세요.")
+        return self
+
+
+class TranscriptBatchItem(TranscriptUpdate):
+    id: str = Field(min_length=1, max_length=64)
+
+
+class TranscriptBatchUpdate(BaseModel):
+    updates: list[TranscriptBatchItem] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "TranscriptBatchUpdate":
+        ids = [item.id for item in self.updates]
+        if len(ids) != len(set(ids)):
+            raise ValueError("같은 수업 내용을 중복해서 수정할 수 없습니다.")
         return self
 
 

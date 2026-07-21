@@ -52,6 +52,8 @@ class SessionRepository:
                     status TEXT NOT NULL
                         CHECK(status IN ('ready', 'recording', 'completed')),
                     duration_seconds REAL NOT NULL CHECK(duration_seconds >= 0),
+                    reference_name TEXT,
+                    reference_text TEXT,
                     material_json TEXT NOT NULL
                 );
 
@@ -95,6 +97,19 @@ class SessionRepository:
             if raw_text_missing:
                 self._connection.execute(
                     "UPDATE segments SET raw_text = text WHERE raw_text IS NULL"
+                )
+
+            session_columns = {
+                str(row["name"])
+                for row in self._connection.execute("PRAGMA table_info(sessions)")
+            }
+            if "reference_name" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN reference_name TEXT"
+                )
+            if "reference_text" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN reference_text TEXT"
                 )
 
     def _import_legacy_json_once(self) -> None:
@@ -152,8 +167,8 @@ class SessionRepository:
             """
             INSERT INTO sessions(
                 id, title, course_name, source_type, source_url, created_at,
-                status, duration_seconds, material_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, duration_seconds, reference_name, reference_text, material_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 course_name = excluded.course_name,
@@ -162,6 +177,8 @@ class SessionRepository:
                 created_at = excluded.created_at,
                 status = excluded.status,
                 duration_seconds = excluded.duration_seconds,
+                reference_name = excluded.reference_name,
+                reference_text = excluded.reference_text,
                 material_json = excluded.material_json
             """,
             (
@@ -173,6 +190,8 @@ class SessionRepository:
                 session.created_at.isoformat(),
                 session.status,
                 session.duration_seconds,
+                session.reference_name,
+                session.reference_text,
                 session.material.model_dump_json(),
             ),
         )
@@ -237,6 +256,8 @@ class SessionRepository:
             created_at=row["created_at"],
             status=row["status"],
             duration_seconds=row["duration_seconds"],
+            reference_name=row["reference_name"],
+            reference_text=row["reference_text"],
             material=StudyMaterial.model_validate(material_payload),
             segments=[TranscriptSegment.model_validate(dict(item)) for item in segment_rows],
         )

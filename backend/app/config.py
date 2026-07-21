@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Re:Class API"
+    app_name: str = "SKAIT API"
     app_version: str = "0.2.0"
     stt_provider: str = "demo"
     llm_provider: str = "local"
@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # DATA_FILE 환경변수 이름은 기존 사용자의 설정과 호환되도록 유지합니다.
     data_file: Path = Path("data/sessions.json")
     max_audio_mb: int = 25
+    max_pdf_mb: int = 20
 
     model_config = SettingsConfigDict(
         env_file=".env",

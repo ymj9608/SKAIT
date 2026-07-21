@@ -1,1 +1,1 @@
-"""Re:Class study agent API."""
+"""SKAIT AI study assistant API."""

@@ -1,6 +1,16 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { BookOpen, ChevronLeft, EllipsisVertical, Pencil, Plus, Sparkles, Trash2 } from '@lucide/vue'
+import {
+  ChevronLeft,
+  EllipsisVertical,
+  PanelLeft,
+  Pencil,
+  Plus,
+  Sparkles,
+  Trash2,
+} from '@lucide/vue'
+import skaitLogo from '../assets/brand/skait-logo.png'
+import skaitWordmark from '../assets/brand/skait-wordmark.png'
 
 defineProps({
   sessions: { type: Array, default: () => [] },
@@ -8,13 +18,11 @@ defineProps({
   open: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['select', 'new', 'close', 'rename', 'delete'])
+const emit = defineEmits(['select', 'new', 'close', 'collapse', 'rename', 'delete'])
 const activeMenuId = ref('')
 
 function formatDate(value) {
   const date = new Date(value)
-  const today = new Date()
-  if (date.toDateString() === today.toDateString()) return '오늘'
   return new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(date)
 }
 
@@ -49,13 +57,18 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
 <template>
   <aside class="sidebar" :class="{ 'sidebar--open': open }">
     <div class="brand-row">
-      <button class="brand" aria-label="Re:Class 홈">
-        <span class="brand-mark"><BookOpen :size="20" /></span>
-        <span>Re:<strong>Class</strong></span>
+      <button class="brand" aria-label="SKAIT 홈">
+        <img class="brand-logo" :src="skaitLogo" alt="" />
+        <img class="brand-wordmark" :src="skaitWordmark" alt="SKAIT" />
       </button>
-      <button class="icon-button sidebar-close" aria-label="메뉴 닫기" @click="emit('close')">
-        <ChevronLeft :size="20" />
-      </button>
+      <div class="sidebar-header-actions">
+        <button class="icon-button sidebar-collapse" aria-label="사이드바 닫기" data-tooltip="사이드바 닫기" @click="emit('collapse')">
+          <PanelLeft :size="20" stroke-width="1.8" />
+        </button>
+        <button class="icon-button sidebar-close" aria-label="메뉴 닫기" @click="emit('close')">
+          <ChevronLeft :size="20" />
+        </button>
+      </div>
     </div>
 
     <button class="new-session-button" @click="emit('new')">

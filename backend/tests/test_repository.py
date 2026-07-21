@@ -26,6 +26,8 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
         source_url="https://youtu.be/WsPJ8FsoMcU",
         status="completed",
         duration_seconds=61.5,
+        reference_name="javascript-basics.pdf",
+        reference_text="콜백 함수와 lexical this를 설명하는 수업 자료입니다.",
         segments=[
             TranscriptSegment(
                 id=f"{session_id}-segment-1",
@@ -232,6 +234,59 @@ class SessionRepositoryTests(unittest.TestCase):
             reopened.close()
 
             self.assertEqual(restored, original)
+
+    def test_existing_database_adds_optional_pdf_columns_without_data_loss(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "reclass.sqlite3"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    course_name TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_url TEXT,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    material_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-session",
+                    "기존 수업",
+                    "SKALA",
+                    "zoom",
+                    None,
+                    "2026-07-21T00:00:00+00:00",
+                    "ready",
+                    0,
+                    StudyMaterial().model_dump_json(),
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            repository = SessionRepository(database)
+            restored = repository.get("legacy-session")
+            self.assertEqual(restored.title, "기존 수업")
+            self.assertIsNone(restored.reference_name)
+            restored.reference_name = "lecture.pdf"
+            restored.reference_text = "train set과 test set을 설명합니다."
+            repository.save(restored)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            persisted = reopened.get("legacy-session")
+            reopened.close()
+            self.assertEqual(persisted.reference_name, "lecture.pdf")
+            self.assertIn("train set", persisted.reference_text)
 
     def test_update_and_delete_are_persistent(self) -> None:
         with TemporaryDirectory() as directory:

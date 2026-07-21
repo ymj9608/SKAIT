@@ -78,6 +78,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ text }),
     }),
+  generateQuiz: (id) => request(`/sessions/${id}/quiz`, { method: 'POST' }),
   chat: (id, message, history = []) =>
     request(`/sessions/${id}/chat`, {
       method: 'POST',

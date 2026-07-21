@@ -37,10 +37,11 @@ const loadFailed = ref(false)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const createModalOpen = ref(false)
-const newTitle = ref('')
+const newTitle = ref('새 수업')
 const newSourceType = ref('zoom')
 const newReferenceFile = ref(null)
 const referenceInput = ref(null)
+const transcriptPanel = ref(null)
 const uploadingReference = ref(false)
 const deletingReference = ref(false)
 const isFinalizing = ref(false)
@@ -49,17 +50,30 @@ let toastTimer = null
 let recordingSessionId = null
 let finalizationPromise = null
 
-function replaceSession(session) {
-  activeSession.value = session
+function upsertSession(session) {
   const index = sessions.value.findIndex((item) => item.id === session.id)
   if (index >= 0) sessions.value.splice(index, 1, session)
   else sessions.value.unshift(session)
+}
+
+function replaceSession(session) {
+  activeSession.value = session
+  upsertSession(session)
+}
+
+function updateSessionInBackground(session) {
+  if (activeSession.value?.id === session.id) activeSession.value = session
+  upsertSession(session)
 }
 
 function showToast(message, type = 'error') {
   toast.value = { message, type }
   clearTimeout(toastTimer)
   toastTimer = window.setTimeout(() => (toast.value = null), 5000)
+}
+
+function focusSummarySource(source) {
+  transcriptPanel.value?.focusSource(source)
 }
 
 const recorder = useRecorder(
@@ -162,7 +176,7 @@ function openCreateModal() {
     showToast('현재 음성 구간 저장과 요약을 마친 뒤 새 학습을 시작해 주세요.', 'info')
     return
   }
-  newTitle.value = `새 수업 · ${new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date())}`
+  newTitle.value = '새 수업'
   newSourceType.value = 'zoom'
   newReferenceFile.value = null
   createModalOpen.value = true
@@ -444,6 +458,7 @@ onMounted(async () => {
           </div>
 
           <TranscriptPanel
+            ref="transcriptPanel"
             :summary-cards="activeSession.material?.summary_cards || []"
             :summary-notes="activeSession.material?.summary_notes || []"
             :recording="recorder.isRecording.value"
@@ -456,8 +471,9 @@ onMounted(async () => {
         <CoachPanel
           :session="activeSession"
           :llm-ready="health.llm_ready"
-          @updated="replaceSession"
+          @updated="updateSessionInBackground"
           @error="showToast"
+          @source-selected="focusSummarySource"
         />
       </div>
 
@@ -506,7 +522,7 @@ onMounted(async () => {
               <FileText :size="17" />
               <strong>{{ newReferenceFile?.name || 'PDF 파일 선택' }}</strong>
             </span>
-            <small>전문 용어 보정과 요약에만 참고하며, 없어도 기존 방식으로 녹음됩니다.</small>
+            <small>PDF를 첨부하면 자료의 전문 용어를 참고해 녹음된 수업 내용을 요약합니다.</small>
           </label>
           <button class="modal-submit" type="submit" :disabled="!newTitle.trim()">
             학습 공간 만들기

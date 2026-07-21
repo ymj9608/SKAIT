@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   BookCheck,
   ChevronDown,
@@ -12,6 +12,7 @@ import {
   Sparkles,
   Waves,
 } from '@lucide/vue'
+import { findSummaryCardForSource } from '../utils/summaryEvidence'
 
 const props = defineProps({
   summaryCards: { type: Array, default: () => [] },
@@ -30,6 +31,8 @@ const summaryEditing = ref(false)
 const summaryDrafts = ref({ cards: {}, notes: {} })
 const summaryEditSubmitting = ref(false)
 const scrollArea = ref(null)
+const highlightedCardId = ref(null)
+let highlightTimer = null
 
 const feedItems = computed(() => [
   ...props.summaryCards.map((card) => ({
@@ -200,6 +203,37 @@ async function submitSummaryEdits() {
   }
 }
 
+async function focusSource(source) {
+  const card = findSummaryCardForSource(props.summaryCards, source)
+  if (!card) return false
+
+  query.value = ''
+  await nextTick()
+
+  const cardElement = [...(scrollArea.value?.querySelectorAll('[data-summary-card-id]') || [])]
+    .find((element) => element.dataset.summaryCardId === card.id)
+  if (!cardElement) return false
+
+  cardElement.open = true
+  highlightedCardId.value = null
+  await nextTick()
+  highlightedCardId.value = card.id
+  cardElement.scrollIntoView({
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    block: 'center',
+  })
+
+  window.clearTimeout(highlightTimer)
+  highlightTimer = window.setTimeout(() => {
+    if (highlightedCardId.value === card.id) highlightedCardId.value = null
+  }, 1400)
+  return true
+}
+
+defineExpose({ focusSource })
+
+onBeforeUnmount(() => window.clearTimeout(highlightTimer))
+
 watch(
   () => feedItems.value.length,
   async () => {
@@ -316,7 +350,11 @@ watch(
           <details
             v-if="item.type === 'summary'"
             class="summary-card"
-            :class="{ 'summary-card--editing': summaryEditing }"
+            :class="{
+              'summary-card--editing': summaryEditing,
+              'summary-card--evidence': highlightedCardId === item.card.id,
+            }"
+            :data-summary-card-id="item.card.id"
             :open="summaryEditing ? true : undefined"
           >
             <summary>

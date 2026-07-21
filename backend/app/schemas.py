@@ -50,6 +50,33 @@ class BatchSummaryResult(BaseModel):
     topics: list[SummaryTopic] = Field(default_factory=list, max_length=2)
 
 
+class QuizQuestion(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    question: str = Field(min_length=1, max_length=500)
+    options: list[str] = Field(min_length=4, max_length=4)
+    correct_option_index: int = Field(ge=0, le=3)
+    explanation: str = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def normalize_question(self) -> "QuizQuestion":
+        self.question = self.question.strip()
+        self.options = [option.strip() for option in self.options]
+        self.explanation = self.explanation.strip()
+        normalized_options = {
+            "".join(option.split()).casefold()
+            for option in self.options
+            if option
+        }
+        if (
+            not self.question
+            or not self.explanation
+            or any(not option for option in self.options)
+            or len(normalized_options) != 4
+        ):
+            raise ValueError("퀴즈 문항과 서로 다른 네 개의 보기를 입력해 주세요.")
+        return self
+
+
 class SummaryCard(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     start_seconds: float = Field(default=0, ge=0)
@@ -68,6 +95,17 @@ class SummaryCard(BaseModel):
 class SummaryNote(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     text: str = Field(min_length=1, max_length=20_000)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ConversationMessage(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    role: Literal["user", "assistant"]
+    text: str = Field(min_length=1, max_length=20_000)
+    class_context: str | None = Field(default=None, max_length=20_000)
+    supplementary_explanation: str | None = Field(default=None, max_length=20_000)
+    knowledge_scope: Literal["class_only", "class_plus_general"] | None = None
+    sources: list[SourceReference] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -129,6 +167,8 @@ class StudyMaterial(BaseModel):
     review_questions: list[str] = Field(default_factory=list)
     summary_cards: list[SummaryCard] = Field(default_factory=list)
     summary_notes: list[SummaryNote] = Field(default_factory=list)
+    quiz_questions: list[QuizQuestion] = Field(default_factory=list, max_length=10)
+    quiz_generated_at: datetime | None = None
     transcript_refinement_version: int = Field(default=1, ge=1)
     learning_items_processed_through_seconds: float = Field(default=0, ge=0)
     summary_processed_through_seconds: float = Field(default=0, ge=0)
@@ -136,7 +176,7 @@ class StudyMaterial(BaseModel):
 
 class LectureSession(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
-    title: str = "새 학습 세션"
+    title: str = "새 수업"
     course_name: str = "SKALA Zoom 수업"
     source_type: Literal["zoom", "youtube", "demo"] = "zoom"
     source_url: str | None = Field(default=None, max_length=2_048)
@@ -147,6 +187,7 @@ class LectureSession(BaseModel):
     reference_text: str | None = Field(default=None, exclude=True)
     segments: list[TranscriptSegment] = Field(default_factory=list)
     material: StudyMaterial = Field(default_factory=StudyMaterial)
+    chat_messages: list[ConversationMessage] = Field(default_factory=list)
 
     @field_serializer("segments")
     def serialize_refined_segments(
@@ -193,7 +234,7 @@ class LectureSession(BaseModel):
 
 
 class SessionCreate(BaseModel):
-    title: str = Field(default="새 학습 세션", min_length=1, max_length=100)
+    title: str = Field(default="새 수업", min_length=1, max_length=100)
     course_name: str = Field(default="SKALA Zoom 수업", min_length=1, max_length=100)
     source_type: Literal["zoom", "youtube"] = "zoom"
     source_url: str | None = Field(default=None, max_length=2_048)

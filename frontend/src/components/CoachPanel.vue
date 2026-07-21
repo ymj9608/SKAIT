@@ -1,26 +1,27 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  AlertCircle,
   ArrowUp,
   BookCheck,
   Bot,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Clock3,
+  LoaderCircle,
   MessageCircleQuestion,
   RotateCcw,
   Sparkles,
   X,
 } from '@lucide/vue'
 import { api } from '../services/api'
-import { selectQuizItems } from '../utils/quiz'
+import { sourcesWithSummaryCards } from '../utils/summaryEvidence'
 
 const props = defineProps({
   session: { type: Object, default: null },
   llmReady: { type: Boolean, default: true },
 })
-const emit = defineEmits(['updated', 'error'])
+const emit = defineEmits(['updated', 'error', 'source-selected'])
 
 const tab = ref('note')
 const question = ref('')
@@ -34,10 +35,18 @@ const quizIndex = ref(0)
 const quizSelected = ref('')
 const quizChecked = ref(false)
 const quizAnswers = ref({})
+const quizGeneratingSessions = ref({})
+const quizNoticeOpen = ref(false)
+const learningSplit = ref(null)
+const learningSplitPercent = ref(50)
+const resizingLearningSplit = ref(false)
 
 const PANEL_WIDTH_STORAGE_KEY = 'skait-coach-panel-width'
+const LEARNING_SPLIT_STORAGE_KEY = 'skait-learning-section-split'
 const MIN_PANEL_WIDTH = 320
 const MAX_PANEL_WIDTH = 680
+const MIN_LEARNING_SPLIT_PERCENT = 22
+const MAX_LEARNING_SPLIT_PERCENT = 78
 
 const material = computed(() => props.session?.material || {})
 const learningItems = computed(() => {
@@ -52,31 +61,27 @@ const learningItems = computed(() => {
 })
 const termItems = computed(() => learningItems.value.filter((item) => item.type === 'term'))
 const conceptItems = computed(() => learningItems.value.filter((item) => item.type === 'concept'))
-const quizItems = computed(() => selectQuizItems(learningItems.value))
+const quizItems = computed(() => material.value.quiz_questions || [])
 const activeQuizItem = computed(() => quizItems.value[quizIndex.value] || null)
-const quizOptions = computed(() => {
-  const item = activeQuizItem.value
-  if (!item) return []
-  const fallbackOptions = [
-    '화면의 모양과 배치만 꾸미기 위한 시각적 규칙입니다.',
-    '컴퓨터의 전원을 직접 제어하는 물리적인 장치입니다.',
-    '인터넷 연결 속도를 나타내기 위해 사용하는 측정 단위입니다.',
-  ]
-  const distractors = quizItems.value
-    .filter((candidate) => candidate.title !== item.title)
-    .map((candidate) => candidate.explanation)
-  const uniqueDistractors = [...new Set([...distractors, ...fallbackOptions])]
-    .filter((option) => option !== item.explanation)
-    .slice(0, 3)
-  const options = [item.explanation, ...uniqueDistractors]
-  const correctPosition = quizIndex.value % options.length
-  options.splice(correctPosition, 0, options.shift())
-  return options
-})
-const quizCorrect = computed(() => quizSelected.value === activeQuizItem.value?.explanation)
+const quizOptions = computed(() => activeQuizItem.value?.options || [])
+const correctQuizOption = computed(() => (
+  quizOptions.value[activeQuizItem.value?.correct_option_index] || ''
+))
+const quizCorrect = computed(() => quizSelected.value === correctQuizOption.value)
+const quizGenerating = computed(() => Boolean(
+  quizGeneratingSessions.value[props.session?.id],
+))
+const hasSummaryContent = computed(() => (
+  material.value.summary_cards?.some((card) => card.topics?.length)
+  || material.value.summary_notes?.some((note) => note.text?.trim())
+  || (
+    material.value.summary?.trim()
+    && !material.value.summary.startsWith('아직 정리할 수업 내용이 없습니다.')
+  )
+))
 
 function quizItemKey(item) {
-  return item ? `${item.type || 'item'}:${item.title}` : ''
+  return item?.id || item?.question || ''
 }
 
 function quizStorageKey(sessionId = props.session?.id) {
@@ -172,36 +177,114 @@ function fitPanelWidth() {
   if (window.innerWidth > 920) panelWidth.value = allowedPanelWidth(panelWidth.value)
 }
 
-function timestamp(seconds) {
-  const total = Math.max(0, Math.floor(seconds || 0))
-  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+function allowedLearningSplit(percent) {
+  return Math.min(
+    MAX_LEARNING_SPLIT_PERCENT,
+    Math.max(MIN_LEARNING_SPLIT_PERCENT, percent),
+  )
+}
+
+function saveLearningSplit() {
+  localStorage.setItem(LEARNING_SPLIT_STORAGE_KEY, String(Math.round(learningSplitPercent.value)))
+}
+
+function resizeLearningSections(event) {
+  const bounds = learningSplit.value?.getBoundingClientRect()
+  if (!bounds?.height) return
+  const percent = ((event.clientY - bounds.top) / bounds.height) * 100
+  learningSplitPercent.value = allowedLearningSplit(percent)
+}
+
+function stopLearningSectionResize() {
+  if (!resizingLearningSplit.value) return
+  resizingLearningSplit.value = false
+  document.body.classList.remove('is-resizing-learning-sections')
+  window.removeEventListener('pointermove', resizeLearningSections)
+  window.removeEventListener('pointerup', stopLearningSectionResize)
+  window.removeEventListener('pointercancel', stopLearningSectionResize)
+  saveLearningSplit()
+}
+
+function startLearningSectionResize(event) {
+  event.preventDefault()
+  resizingLearningSplit.value = true
+  document.body.classList.add('is-resizing-learning-sections')
+  resizeLearningSections(event)
+  window.addEventListener('pointermove', resizeLearningSections)
+  window.addEventListener('pointerup', stopLearningSectionResize)
+  window.addEventListener('pointercancel', stopLearningSectionResize)
+}
+
+function adjustLearningSplit(change) {
+  learningSplitPercent.value = allowedLearningSplit(learningSplitPercent.value + change)
+  saveLearningSplit()
+}
+
+function resetLearningSplit() {
+  learningSplitPercent.value = 50
+  saveLearningSplit()
+}
+
+function visibleSources(sources) {
+  return sourcesWithSummaryCards(material.value.summary_cards || [], sources || [])
+}
+
+function selectSource(source) {
+  emit('source-selected', source)
 }
 
 function resetChat() {
   quizOpen.value = false
+  quizNoticeOpen.value = false
   quizIndex.value = 0
   quizSelected.value = ''
   quizChecked.value = false
   quizAnswers.value = {}
+  const storedMessages = (props.session?.chat_messages || []).map((message) => ({
+    role: message.role,
+    text: message.text,
+    classContext: message.class_context,
+    supplement: message.supplementary_explanation,
+    knowledgeScope: message.knowledge_scope,
+    sources: message.sources || [],
+  }))
   messages.value = [
     {
       role: 'assistant',
       text: '안녕하세요! 수업 내용 중에서 이해가 안 된 부분을 물어보세요.',
       sources: [],
     },
+    ...storedMessages,
   ]
+  void scrollToBottom()
 }
 
-watch(() => props.session?.id, resetChat, { immediate: true })
+watch(
+  [
+    () => props.session?.id,
+    () => props.session?.chat_messages?.length || 0,
+  ],
+  resetChat,
+  { immediate: true },
+)
+
+watch(tab, (activeTab) => {
+  if (activeTab === 'chat') void scrollToBottom()
+})
 
 onMounted(() => {
   const savedWidth = Number(localStorage.getItem(PANEL_WIDTH_STORAGE_KEY))
   if (Number.isFinite(savedWidth) && savedWidth > 0) panelWidth.value = allowedPanelWidth(savedWidth)
+  const savedLearningSplit = Number(localStorage.getItem(LEARNING_SPLIT_STORAGE_KEY))
+  if (Number.isFinite(savedLearningSplit)) {
+    learningSplitPercent.value = allowedLearningSplit(savedLearningSplit)
+  }
   window.addEventListener('resize', fitPanelWidth)
 })
 
 onBeforeUnmount(() => {
   stopPanelResize()
+  stopLearningSectionResize()
   window.removeEventListener('resize', fitPanelWidth)
 })
 
@@ -261,11 +344,55 @@ async function sendQuestion(prompt) {
 
 function openQuiz() {
   if (!quizItems.value.length) {
-    emit('error', '객관식 퀴즈를 만들 수 있는 용어나 중요 개념이 아직 없습니다.')
+    quizNoticeOpen.value = true
     return
   }
   loadQuizProgress()
   quizOpen.value = true
+}
+
+async function generateQuiz() {
+  if (quizGenerating.value || !props.session) return
+  if (!hasSummaryContent.value) {
+    quizNoticeOpen.value = true
+    return
+  }
+  if (!props.llmReady) {
+    emit('error', '로컬 LLM이 준비되지 않았습니다. Ollama와 모델 상태를 확인해 주세요.')
+    return
+  }
+
+  const sessionId = props.session.id
+  quizGeneratingSessions.value = {
+    ...quizGeneratingSessions.value,
+    [sessionId]: true,
+  }
+  try {
+    const session = await api.generateQuiz(sessionId)
+    emit('updated', session)
+    localStorage.removeItem(quizStorageKey(sessionId))
+    if (props.session?.id === sessionId) {
+      quizIndex.value = 0
+      quizSelected.value = ''
+      quizChecked.value = false
+      quizAnswers.value = {}
+      await nextTick()
+      openQuiz()
+    }
+  } catch (error) {
+    if (
+      props.session?.id === sessionId
+      && error.message.includes('수업 내용이 없으므로')
+    ) {
+      quizNoticeOpen.value = true
+    } else {
+      emit('error', error.message)
+    }
+  } finally {
+    const remainingSessions = { ...quizGeneratingSessions.value }
+    delete remainingSessions[sessionId]
+    quizGeneratingSessions.value = remainingSessions
+  }
 }
 
 function closeQuiz() {
@@ -345,76 +472,117 @@ function submitQuiz() {
     </div>
 
     <div v-if="tab === 'note'" class="note-scroll">
-      <section v-if="quizItems.length" class="review-card">
+      <section class="review-card">
         <div class="review-card-icon"><BookCheck :size="21" /></div>
         <div>
-          <strong>3분 복습</strong>
-          <p>오늘 배운 내용을 간단한 퀴즈로 복습해 볼까요?</p>
-          <button @click="openQuiz">
-            복습 시작 <ChevronRight :size="15" />
-          </button>
+          <strong>QUIZ</strong>
+          <p>퀴즈를 통해 배운 내용을 확인해보세요.</p>
+          <div class="review-card-actions">
+            <button v-if="quizItems.length" type="button" @click="openQuiz">
+              퀴즈 풀기 <ChevronRight :size="15" />
+            </button>
+            <button
+              type="button"
+              class="review-regenerate-button"
+              :disabled="quizGenerating"
+              @click="generateQuiz"
+            >
+              <LoaderCircle v-if="quizGenerating" class="spin" :size="13" />
+              <RotateCcw v-else-if="quizItems.length" :size="13" />
+              <Sparkles v-else :size="13" />
+              {{ quizGenerating ? '생성 중…' : (quizItems.length ? '퀴즈 재생성' : '퀴즈 생성') }}
+            </button>
+          </div>
         </div>
       </section>
 
-      <section class="note-section learning-section learning-section--terms">
-        <div class="section-heading">
-          <span>
-            <BookCheck :size="17" /> 알아둘 용어
-            <small class="learning-item-count">{{ termItems.length }}</small>
-          </span>
-        </div>
-        <div v-if="termItems.length" class="keyword-list">
-          <div
-            v-for="(item, index) in termItems"
-            :key="`term-${item.title}-${index}`"
-            class="keyword-item keyword-item--term"
-          >
-            <div class="learning-item-heading">
-              <button
-                :title="`${item.title} 더 자세히 질문하기`"
-                @click="sendQuestion(`${item.title}를 비전공자도 이해하게 쉽게 설명해줘`)"
-              >
-                {{ item.title }}
-              </button>
-            </div>
-            <p v-if="item.explanation">{{ item.explanation }}</p>
+      <div
+        ref="learningSplit"
+        class="learning-split"
+        :class="{ 'learning-split--resizing': resizingLearningSplit }"
+        :style="{
+          gridTemplateRows: `minmax(90px, ${learningSplitPercent}fr) 15px minmax(90px, ${100 - learningSplitPercent}fr)`,
+        }"
+      >
+        <section class="note-section learning-section learning-section--terms">
+          <div class="section-heading">
+            <span>
+              <BookCheck :size="17" /> 알아둘 용어
+              <small class="learning-item-count">{{ termItems.length }}</small>
+            </span>
           </div>
-        </div>
-        <div v-else class="learning-empty">
-          <strong>아직 감지된 용어가 없습니다.</strong>
-          <p>새로운 전문 용어가 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
-        </div>
-      </section>
+          <div v-if="termItems.length" class="keyword-list">
+            <div
+              v-for="(item, index) in termItems"
+              :key="`term-${item.title}-${index}`"
+              class="keyword-item keyword-item--term"
+            >
+              <div class="learning-item-heading">
+                <button
+                  :title="`${item.title} 더 자세히 질문하기`"
+                  @click="sendQuestion(`${item.title}를 비전공자도 이해하게 쉽게 설명해줘`)"
+                >
+                  {{ item.title }}
+                </button>
+              </div>
+              <p v-if="item.explanation">{{ item.explanation }}</p>
+            </div>
+          </div>
+          <div v-else class="learning-empty">
+            <strong>아직 감지된 용어가 없습니다.</strong>
+            <p>새로운 전문 용어가 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
+          </div>
+        </section>
 
-      <section class="note-section learning-section learning-section--concepts">
-        <div class="section-heading">
-          <span>
-            <Sparkles :size="17" /> 중요 개념
-            <small class="learning-item-count learning-item-count--concept">{{ conceptItems.length }}</small>
-          </span>
-        </div>
-        <div v-if="conceptItems.length" class="keyword-list">
-          <div
-            v-for="(item, index) in conceptItems"
-            :key="`concept-${item.title}-${index}`"
-            class="keyword-item keyword-item--concept"
-          >
-            <div class="learning-item-heading">
-              <button
-                :title="`${item.title} 더 자세히 질문하기`"
-                @click="sendQuestion(`${item.title}를 비전공자도 이해하게 쉽게 설명해줘`)"
-              >
-                {{ item.title }}
-              </button>
-            </div>
-            <p v-if="item.explanation">{{ item.explanation }}</p>
+        <button
+          type="button"
+          class="learning-section-resizer"
+          role="separator"
+          aria-label="알아둘 용어와 중요 개념 영역 크기 조절"
+          aria-orientation="horizontal"
+          :aria-valuemin="MIN_LEARNING_SPLIT_PERCENT"
+          :aria-valuemax="MAX_LEARNING_SPLIT_PERCENT"
+          :aria-valuenow="Math.round(learningSplitPercent)"
+          title="드래그하여 영역 크기 조절 · 더블 클릭하여 초기화"
+          @pointerdown="startLearningSectionResize"
+          @dblclick="resetLearningSplit"
+          @keydown.up.prevent="adjustLearningSplit(-5)"
+          @keydown.down.prevent="adjustLearningSplit(5)"
+          @keydown.home.prevent="resetLearningSplit"
+        >
+          <span />
+        </button>
+
+        <section class="note-section learning-section learning-section--concepts">
+          <div class="section-heading">
+            <span>
+              <Sparkles :size="17" /> 중요 개념
+              <small class="learning-item-count learning-item-count--concept">{{ conceptItems.length }}</small>
+            </span>
           </div>
-        </div>
-        <div v-else class="learning-empty">
-          <strong>아직 감지된 중요 개념이 없습니다.</strong>
-          <p>새로운 원리나 개념이 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
-        </div>
-      </section>
+          <div v-if="conceptItems.length" class="keyword-list">
+            <div
+              v-for="(item, index) in conceptItems"
+              :key="`concept-${item.title}-${index}`"
+              class="keyword-item keyword-item--concept"
+            >
+              <div class="learning-item-heading">
+                <button
+                  :title="`${item.title} 더 자세히 질문하기`"
+                  @click="sendQuestion(`${item.title}를 비전공자도 이해하게 쉽게 설명해줘`)"
+                >
+                  {{ item.title }}
+                </button>
+              </div>
+              <p v-if="item.explanation">{{ item.explanation }}</p>
+            </div>
+          </div>
+          <div v-else class="learning-empty">
+            <strong>아직 감지된 중요 개념이 없습니다.</strong>
+            <p>새로운 원리나 개념이 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
+          </div>
+        </section>
+      </div>
 
     </div>
 
@@ -441,10 +609,16 @@ function submitQuiz() {
             </section>
           </div>
           <p v-else>{{ message.text }}</p>
-          <div v-if="message.sources?.length" class="source-list">
+          <div v-if="visibleSources(message.sources).length" class="source-list">
             <span class="source-label"><CheckCircle2 :size="13" /> 수업 근거</span>
-            <button v-for="source in message.sources" :key="source.segment_id" class="source-chip">
-              <Clock3 :size="12" /> {{ timestamp(source.start_seconds) }}
+            <button
+              v-for="source in visibleSources(message.sources)"
+              :key="source.segment_id"
+              type="button"
+              class="source-chip"
+              title="수업 요약에서 근거 보기"
+              @click="selectSource(source)"
+            >
               <span>{{ source.excerpt }}</span>
             </button>
           </div>
@@ -489,7 +663,7 @@ function submitQuiz() {
           <div class="quiz-heading">
             <span class="quiz-icon"><BookCheck :size="21" /></span>
             <div>
-              <small>3분 복습</small>
+              <small>QUIZ</small>
               <h2>수업 내용을 확인해 볼까요?</h2>
             </div>
             <div class="quiz-progress" aria-label="퀴즈 문제 이동">
@@ -505,7 +679,7 @@ function submitQuiz() {
 
           <section class="quiz-question">
             <small>QUESTION</small>
-            <p>“{{ activeQuizItem?.title }}”에 대한 설명으로 가장 알맞은 것은?</p>
+            <p>{{ activeQuizItem?.question }}</p>
           </section>
 
           <div class="quiz-options" role="radiogroup" aria-label="퀴즈 선택지">
@@ -516,7 +690,7 @@ function submitQuiz() {
               class="quiz-option"
               :class="{
                 'quiz-option--selected': quizSelected === option,
-                'quiz-option--correct': quizChecked && option === activeQuizItem?.explanation,
+                'quiz-option--correct': quizChecked && index === activeQuizItem?.correct_option_index,
                 'quiz-option--wrong': quizChecked && quizSelected === option && !quizCorrect,
               }"
               :aria-checked="quizSelected === option"
@@ -525,12 +699,13 @@ function submitQuiz() {
             >
               <span>{{ ['A', 'B', 'C', 'D'][index] }}</span>
               <p>{{ option }}</p>
-              <CheckCircle2 v-if="quizChecked && option === activeQuizItem?.explanation" :size="17" />
+              <CheckCircle2 v-if="quizChecked && index === activeQuizItem?.correct_option_index" :size="17" />
             </button>
           </div>
 
           <p v-if="quizChecked" class="quiz-feedback" :class="{ 'quiz-feedback--correct': quizCorrect }">
-            {{ quizCorrect ? '정답이에요! 개념을 잘 이해하고 있어요.' : '정답을 확인했어요. 설명을 한 번 더 읽어보세요.' }}
+            <strong>{{ quizCorrect ? '정답이에요!' : '정답을 확인했어요.' }}</strong>
+            <span>{{ activeQuizItem?.explanation }}</span>
           </p>
 
           <div class="quiz-actions">
@@ -543,6 +718,17 @@ function submitQuiz() {
             </button>
           </div>
         </form>
+      </div>
+    </Transition>
+
+    <Transition name="quiz">
+      <div v-if="quizNoticeOpen" class="quiz-backdrop" @click.self="quizNoticeOpen = false">
+        <section class="quiz-notice-modal" role="alertdialog" aria-modal="true" aria-labelledby="quiz-notice-title">
+          <span class="quiz-notice-icon"><AlertCircle :size="24" /></span>
+          <h2 id="quiz-notice-title">퀴즈를 생성할 수 없습니다.</h2>
+          <p>수업 내용이 없으므로 퀴즈를 생성할 수 없습니다.</p>
+          <button type="button" @click="quizNoticeOpen = false">확인</button>
+        </section>
       </div>
     </Transition>
   </Teleport>

@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     ollama_timeout_seconds: float = 180
     ollama_context_window: int = 8192
     ollama_keep_alive: str = "15m"
-    summary_interval_segments: int = 10
+    learning_item_batch_seconds: int = Field(default=30, ge=15, le=60)
+    summary_batch_seconds: int = Field(default=120, ge=30, le=600)
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     database_file: Path = Path("data/reclass.sqlite3")
     # 이전 버전의 JSON 기록을 최초 한 번 가져오기 위한 경로입니다.

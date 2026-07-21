@@ -12,6 +12,7 @@ from app.schemas import (
     LectureSession,
     SessionCreate,
     StudyMaterial,
+    SummaryNote,
     TranscriptSegment,
 )
 
@@ -61,6 +62,162 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
 
 
 class SessionRepositoryTests(unittest.TestCase):
+    def test_old_raw_segments_and_learning_items_are_migrated_safely(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "reclass.sqlite3"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    course_name TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_url TEXT,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    material_json TEXT NOT NULL
+                );
+                CREATE TABLE segments (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    start_seconds REAL NOT NULL,
+                    speaker TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    confidence REAL
+                );
+                """
+            )
+            old_material = {
+                "summary": "가격 평균을 설명한 구간입니다.",
+                "learning_items": [
+                    {
+                        "type": "term",
+                        "title": "프라이스 와이 언더버 트렌",
+                        "explanation": "원시 STT에서 잘못 뽑힌 용어입니다.",
+                    }
+                ],
+                "keywords": ["프라이스 와이 언더버 트렌"],
+                "keyword_explanations": {
+                    "프라이스 와이 언더버 트렌": "잘못된 설명"
+                },
+            }
+            connection.execute(
+                """
+                INSERT INTO sessions(
+                    id, title, course_name, source_type, source_url, created_at,
+                    status, duration_seconds, material_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "old-session",
+                    "기존 수업",
+                    "SKALA",
+                    "zoom",
+                    None,
+                    "2026-07-21T00:00:00+00:00",
+                    "completed",
+                    120,
+                    json.dumps(old_material, ensure_ascii=False),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO segments(
+                    id, session_id, position, start_seconds, speaker, text, confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "old-segment",
+                    "old-session",
+                    0,
+                    0,
+                    "교수님",
+                    "프라이스 와이 언더버 트렌",
+                    0.8,
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            repository = SessionRepository(database)
+            restored = repository.get("old-session")
+            repository.close()
+
+            self.assertEqual(restored.segments[0].raw_text, "프라이스 와이 언더버 트렌")
+            self.assertFalse(restored.segments[0].is_refined)
+            self.assertEqual(restored.material.learning_items, [])
+            self.assertEqual(restored.material.keywords, [])
+            self.assertEqual(restored.material.keyword_explanations, {})
+            self.assertEqual(
+                restored.material.learning_items_processed_through_seconds,
+                120,
+            )
+
+    def test_personal_summary_note_is_persistent(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "reclass.sqlite3"
+            session = sample_session()
+            session.material.summary_notes.append(
+                SummaryNote(text="요청 검증 흐름을 다시 복습하기")
+            )
+
+            repository = SessionRepository(database)
+            repository.save(session)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.get(session.id)
+            reopened.close()
+
+            self.assertEqual(
+                restored.material.summary_notes[0].text,
+                "요청 검증 흐름을 다시 복습하기",
+            )
+
+    def test_raw_and_refined_transcript_are_stored_but_raw_is_not_serialized(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "reclass.sqlite3"
+            session = sample_session()
+            session.segments[0].raw_text = "와이 언더바 트레인의 평균"
+            session.segments[0].text = "`y_train`의 평균"
+            session.segments[0].is_refined = True
+
+            repository = SessionRepository(database)
+            repository.save(session)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.get(session.id)
+            reopened.close()
+
+            self.assertEqual(restored.segments[0].raw_text, "와이 언더바 트레인의 평균")
+            self.assertEqual(restored.segments[0].text, "`y_train`의 평균")
+            serialized = restored.model_dump(mode="json")
+            self.assertNotIn("raw_text", serialized["segments"][0])
+            self.assertNotIn("is_refined", serialized["segments"][0])
+
+    def test_unrefined_segment_is_completely_hidden_from_serialized_session(self) -> None:
+        session = sample_session()
+        session.segments.insert(
+            0,
+            TranscriptSegment(
+                text="프라이스 와이 언더버 트렌",
+                raw_text="프라이스 와이 언더버 트렌",
+                is_refined=False,
+            ),
+        )
+
+        serialized = session.model_dump(mode="json")
+
+        self.assertEqual(len(serialized["segments"]), 2)
+        self.assertNotIn(
+            "프라이스 와이 언더버 트렌",
+            [segment["text"] for segment in serialized["segments"]],
+        )
+
     def test_save_close_and_reopen_preserves_the_complete_session(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "reclass.sqlite3"

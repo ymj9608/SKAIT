@@ -131,6 +131,7 @@ export function useRecorder(onChunk, onCaptureEnded) {
       error.value = event.error?.message || '오디오 녹음 중 오류가 발생했습니다.'
     }
     currentRecorder.onstop = async () => {
+      const chunkEndedAt = elapsed.value
       clearTimeout(currentChunkTimeout)
       if (chunkTimeout === currentChunkTimeout) chunkTimeout = null
       if (recorder === currentRecorder) recorder = null
@@ -153,7 +154,11 @@ export function useRecorder(onChunk, onCaptureEnded) {
         isProcessing.value = true
         try {
           const upload = uploadQueue.then(() =>
-            onChunk(new Blob(chunks, { type: mimeType || 'audio/webm' }), chunkStartedAt),
+            onChunk(
+              new Blob(chunks, { type: mimeType || 'audio/webm' }),
+              chunkStartedAt,
+              Math.max(chunkStartedAt, chunkEndedAt),
+            ),
           )
           uploadQueue = upload.catch(() => undefined)
           await upload

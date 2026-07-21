@@ -1,4 +1,11 @@
-from .schemas import LearningItem, LectureSession, StudyMaterial, TranscriptSegment
+from .schemas import (
+    LearningItem,
+    LectureSession,
+    StudyMaterial,
+    SummaryCard,
+    SummaryTopic,
+    TranscriptSegment,
+)
 
 
 def build_demo_session() -> LectureSession:
@@ -66,5 +73,38 @@ def build_demo_session() -> LectureSession:
                 "Pydantic이 잘못된 요청을 받으면 어떤 도움을 주나요?",
                 "비동기 처리가 특히 유용한 상황은 언제인가요?",
             ],
+            summary_cards=[
+                SummaryCard(
+                    start_seconds=0,
+                    end_seconds=120,
+                    source_segment_ids=[segments[0].id, segments[1].id],
+                    topics=[
+                        SummaryTopic(
+                            title="REST API 요청과 응답",
+                            summary="API는 프로그램 사이의 약속된 소통 창구이며, REST API에서는 클라이언트가 HTTP 요청을 보내고 서버가 상태 코드와 데이터로 응답합니다.",
+                            key_points=[
+                                "GET은 조회, POST는 생성을 표현할 때 주로 사용합니다.",
+                                "서버 응답에는 상태 코드와 데이터가 담깁니다.",
+                            ],
+                        )
+                    ],
+                ),
+                SummaryCard(
+                    start_seconds=120,
+                    end_seconds=240,
+                    source_segment_ids=[segments[2].id, segments[3].id],
+                    topics=[
+                        SummaryTopic(
+                            title="FastAPI 입력 검증과 비동기 처리",
+                            summary="FastAPI는 Pydantic 모델로 요청 형식과 필수 값을 검증할 수 있습니다. 비동기 함수는 입출력을 기다리는 동안 다른 요청을 처리하지만 CPU 계산 자체를 빠르게 만들지는 않습니다.",
+                            key_points=[
+                                "Pydantic 모델은 요청 데이터의 형식과 필수 값을 검증합니다.",
+                                "비동기는 입출력 대기 시간을 다른 요청 처리에 활용합니다.",
+                            ],
+                        )
+                    ],
+                ),
+            ],
+            summary_processed_through_seconds=305,
         ),
     )

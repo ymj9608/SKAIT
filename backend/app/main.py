@@ -14,6 +14,10 @@ from .schemas import (
     SessionCreate,
     SessionUpdate,
     StatusUpdate,
+    StudyMaterial,
+    SummaryCard,
+    SummaryNote,
+    SummaryNoteCreate,
     TranscriptCreate,
     TranscriptSegment,
     TranscriptUpdate,
@@ -21,9 +25,11 @@ from .schemas import (
 from .services.stt import SpeechToText, build_stt
 from .services.study import (
     StudyAssistant,
-    build_recent_learning_context,
     build_study_assistant,
+    format_timestamp,
     merge_learning_items,
+    remove_duplicate_topics,
+    summary_card_text,
 )
 
 
@@ -90,20 +96,79 @@ def assistant_or_503() -> StudyAssistant:
     return assistant
 
 
-async def regenerate_material(session: LectureSession) -> None:
-    """전체 노트를 갱신하면서 실시간으로 찾은 term/concept를 보존합니다."""
-    previous_items = list(session.material.learning_items)
-    refreshed = await assistant_or_503().summarize(session.segments)
-    summarized_items = list(refreshed.learning_items)
-    refreshed.learning_items = previous_items
-    session.material = merge_learning_items(refreshed, summarized_items)
-
-
-async def detect_latest_learning_items(session: LectureSession) -> None:
-    """직전 최대 90초를 보조 문맥으로 사용해 현재 30초의 장애물만 탐지합니다."""
-    previous_context, current_context = build_recent_learning_context(session.segments)
-    if not current_context:
+def refresh_material_digest(session: LectureSession) -> None:
+    """기존 챗봇·AI 노트 소비자를 위해 카드의 최신 핵심을 material에도 투영합니다."""
+    topics = [
+        topic
+        for card in session.material.summary_cards[-3:]
+        for topic in card.topics
+    ]
+    if not topics:
         return
+    session.material.summary = " ".join(topic.summary for topic in topics[-2:])
+    session.material.key_points = [
+        point
+        for topic in topics
+        for point in topic.key_points
+    ][-5:]
+
+
+async def refine_transcript_segment(
+    session: LectureSession,
+    segment: TranscriptSegment,
+) -> bool:
+    context_start = max(0, segment.start_seconds - 90)
+    previous_segments = [
+        item
+        for item in session.segments
+        if item.id != segment.id
+        and item.is_refined
+        and context_start <= item.start_seconds < segment.start_seconds
+    ]
+    if not previous_segments:
+        previous_segments = [
+            item
+            for item in session.segments
+            if item.id != segment.id and item.is_refined
+        ][-3:]
+    previous_context = "\n".join(
+        f"[{format_timestamp(item.start_seconds)}] {item.speaker}: {item.text}"
+        for item in previous_segments[-12:]
+    )
+    cleaned = await assistant_or_503().refine_transcript(
+        previous_context,
+        segment.raw_text or segment.text,
+    )
+    if not cleaned:
+        return False
+    segment.text = cleaned
+    segment.is_refined = True
+    return True
+
+
+async def detect_learning_items_window(
+    session: LectureSession,
+    window_start: float,
+    window_end: float,
+    segments: list[TranscriptSegment],
+) -> None:
+    if not segments:
+        return
+    context_start = max(0, window_start - 90)
+    previous_segments = [
+        segment
+        for segment in session.segments
+        if segment.is_refined
+        and context_start <= segment.start_seconds < window_start
+    ]
+    previous_context = "\n".join(
+        f"[{format_timestamp(segment.start_seconds)}] {segment.speaker}: {segment.text}"
+        for segment in previous_segments
+    )
+    current_context = "\n".join(
+        f"[{format_timestamp(segment.start_seconds)}] {segment.speaker}: {segment.text}"
+        for segment in segments
+    )
     recent_titles = [item.title for item in session.material.learning_items[-20:]]
     detected = await assistant_or_503().detect_learning_items(
         previous_context,
@@ -112,6 +177,133 @@ async def detect_latest_learning_items(session: LectureSession) -> None:
     )
     if detected:
         session.material = merge_learning_items(session.material, detected)
+
+
+async def process_learning_item_batches(
+    session: LectureSession,
+    through_seconds: float,
+    *,
+    include_partial: bool = False,
+) -> None:
+    """저장된 STT를 30초 창으로 묶어 용어·중요 개념을 빠르게 갱신합니다."""
+    cursor = session.material.learning_items_processed_through_seconds
+    through_seconds = max(cursor, through_seconds)
+    batch_seconds = float(settings.learning_item_batch_seconds)
+
+    while cursor + batch_seconds <= through_seconds + 0.001:
+        window_end = cursor + batch_seconds
+        window_segments = [
+            segment
+            for segment in session.segments
+            if segment.is_refined and cursor <= segment.start_seconds < window_end
+        ]
+        await detect_learning_items_window(
+            session,
+            cursor,
+            window_end,
+            window_segments,
+        )
+        cursor = window_end
+        session.material.learning_items_processed_through_seconds = cursor
+
+    if include_partial and through_seconds > cursor + 0.001:
+        window_segments = [
+            segment
+            for segment in session.segments
+            if segment.is_refined and cursor <= segment.start_seconds <= through_seconds
+        ]
+        await detect_learning_items_window(
+            session,
+            cursor,
+            through_seconds,
+            window_segments,
+        )
+        cursor = through_seconds
+        session.material.learning_items_processed_through_seconds = cursor
+
+
+async def summarize_window(
+    session: LectureSession,
+    window_start: float,
+    window_end: float,
+    segments: list[TranscriptSegment],
+) -> None:
+    if not segments:
+        return
+    previous_cards = session.material.summary_cards
+    previous_summary = summary_card_text(previous_cards[-1]) if previous_cards else ""
+    recent_topics = [
+        topic.title
+        for card in previous_cards[-5:]
+        for topic in card.topics
+    ]
+    result = await assistant_or_503().summarize_batch(
+        segments,
+        previous_summary,
+        recent_topics,
+    )
+    result = remove_duplicate_topics(result, previous_cards)
+    if not result.has_meaningful_content or not result.topics:
+        return
+
+    session.material.summary_cards.append(
+        SummaryCard(
+            start_seconds=window_start,
+            end_seconds=window_end,
+            topics=result.topics,
+            source_segment_ids=[segment.id for segment in segments],
+        )
+    )
+    refresh_material_digest(session)
+
+
+async def process_summary_batches(
+    session: LectureSession,
+    through_seconds: float,
+    *,
+    include_partial: bool = False,
+) -> None:
+    """전사를 고정 2분 창으로 묶고, 처리 완료 지점을 의미 없는 창까지 기록합니다."""
+    cursor = session.material.summary_processed_through_seconds
+    through_seconds = max(cursor, through_seconds)
+    batch_seconds = float(settings.summary_batch_seconds)
+
+    while cursor + batch_seconds <= through_seconds + 0.001:
+        window_end = cursor + batch_seconds
+        window_segments = [
+            segment
+            for segment in session.segments
+            if segment.is_refined and cursor <= segment.start_seconds < window_end
+        ]
+        await summarize_window(session, cursor, window_end, window_segments)
+        cursor = window_end
+        session.material.summary_processed_through_seconds = cursor
+
+    if include_partial and through_seconds > cursor + 0.001:
+        window_segments = [
+            segment
+            for segment in session.segments
+            if segment.is_refined and cursor <= segment.start_seconds <= through_seconds
+        ]
+        await summarize_window(session, cursor, through_seconds, window_segments)
+        cursor = through_seconds
+        session.material.summary_processed_through_seconds = cursor
+
+
+async def rebuild_study_material(session: LectureSession) -> None:
+    """원문 보정 뒤 30초 학습 항목과 2분 요약 카드를 일관되게 다시 만듭니다."""
+    personal_notes = list(session.material.summary_notes)
+    session.material = StudyMaterial(summary_notes=personal_notes)
+    await process_summary_batches(
+        session,
+        session.duration_seconds,
+        include_partial=True,
+    )
+    await process_learning_item_batches(
+        session,
+        session.duration_seconds,
+        include_partial=True,
+    )
 
 
 @app.get("/")
@@ -133,6 +325,8 @@ async def health() -> HealthResponse:
         llm_model=getattr(assistant, "model_name", None),
         stt_ready=stt_ready,
         llm_ready=llm_ready,
+        learning_item_batch_seconds=settings.learning_item_batch_seconds,
+        summary_batch_seconds=settings.summary_batch_seconds,
         stt_error=app.state.stt_error if not stt_ready else None,
         llm_error=app.state.llm_error if not llm_ready else None,
     )
@@ -179,8 +373,16 @@ async def update_status(session_id: str, payload: StatusUpdate) -> LectureSessio
     if payload.duration_seconds is not None:
         session.duration_seconds = max(session.duration_seconds, payload.duration_seconds)
     if payload.status == "completed" and session.segments:
-        await regenerate_material(session)
-        await detect_latest_learning_items(session)
+        await process_summary_batches(
+            session,
+            session.duration_seconds,
+            include_partial=True,
+        )
+        await process_learning_item_batches(
+            session,
+            session.duration_seconds,
+            include_partial=True,
+        )
     return repository().save(session)
 
 
@@ -200,10 +402,19 @@ async def append_transcript(session_id: str, payload: TranscriptCreate) -> Lectu
             confidence=1,
         )
     )
-    session.duration_seconds = max(session.duration_seconds, start_seconds)
-    # 직접 입력은 테스트·보정 흐름이므로 즉시 AI 노트를 갱신합니다.
-    await regenerate_material(session)
-    await detect_latest_learning_items(session)
+    # 원문을 먼저 영구 저장한 뒤 30초 탐지와 요약을 실행합니다.
+    session.duration_seconds = max(session.duration_seconds, start_seconds + 1)
+    repository().save(session)
+    await process_summary_batches(
+        session,
+        session.duration_seconds,
+        include_partial=True,
+    )
+    await process_learning_item_batches(
+        session,
+        session.duration_seconds,
+        include_partial=True,
+    )
     return repository().save(session)
 
 
@@ -221,7 +432,8 @@ async def update_transcript(
     if segment is None:
         raise HTTPException(status_code=404, detail="수업 내용을 찾을 수 없습니다.")
     segment.text = payload.text
-    await regenerate_material(session)
+    segment.is_refined = True
+    await rebuild_study_material(session)
     return repository().save(session)
 
 
@@ -230,6 +442,7 @@ async def transcribe_audio(
     session_id: str,
     audio: UploadFile = File(...),
     start_seconds: float = Form(default=0, ge=0),
+    end_seconds: float | None = Form(default=None, ge=0),
 ) -> LectureSession:
     session = get_session_or_404(session_id)
     stt: SpeechToText | None = app.state.stt
@@ -250,45 +463,60 @@ async def transcribe_audio(
         result = await stt.transcribe(raw, audio.filename or "lecture.webm")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"음성 인식에 실패했습니다: {exc}") from exc
+    chunk_end_seconds = max(start_seconds, end_seconds or start_seconds)
     if not result.text:
         # YouTube 인트로 음악이나 짧은 무음은 정상적인 실시간 구간입니다.
         # 오류 알림을 띄우지 않고 수집 시간만 보존합니다.
-        session.duration_seconds = max(session.duration_seconds, start_seconds)
+        session.duration_seconds = max(session.duration_seconds, chunk_end_seconds)
+        repository().save(session)
+        await process_summary_batches(session, chunk_end_seconds)
+        await process_learning_item_batches(session, chunk_end_seconds)
         return repository().save(session)
-    session.segments.append(
-        TranscriptSegment(
-            start_seconds=start_seconds,
-            speaker="강사" if session.source_type == "youtube" else "교수님",
-            text=result.text,
-            confidence=result.confidence,
-        )
+    segment = TranscriptSegment(
+        start_seconds=start_seconds,
+        speaker="강사" if session.source_type == "youtube" else "교수님",
+        text=result.text,
+        confidence=result.confidence,
+        raw_text=result.text,
+        is_refined=False,
     )
-    session.duration_seconds = max(session.duration_seconds, start_seconds)
-    # 전체 노트는 설정된 간격으로 생성하되, 그 사이에는 짧은 전문용어
-    # 탐지 프롬프트만 실행해 30초 구간의 어려운 개념을 놓치지 않습니다.
-    if (
-        len(session.segments) == 1
-        or len(session.segments) % settings.summary_interval_segments == 0
-    ):
-        await regenerate_material(session)
-    await detect_latest_learning_items(session)
+    session.segments.append(segment)
+    session.duration_seconds = max(session.duration_seconds, chunk_end_seconds)
+    # 원시 STT를 먼저 내부 저장한 뒤, 정제에 성공한 텍스트만 후속 단계에서 사용합니다.
+    repository().save(session)
+    if not await refine_transcript_segment(session, segment):
+        return repository().save(session)
+    repository().save(session)
+    # 화면용 요약은 정제 전사 2분 창, 용어·개념은 정제 전사 30초 창에서 생성합니다.
+    await process_summary_batches(session, chunk_end_seconds)
+    await process_learning_item_batches(session, chunk_end_seconds)
     return repository().save(session)
 
 
 @app.post("/api/sessions/{session_id}/summary", response_model=LectureSession)
 async def refresh_summary(session_id: str) -> LectureSession:
     session = get_session_or_404(session_id)
-    await regenerate_material(session)
-    await detect_latest_learning_items(session)
+    await rebuild_study_material(session)
+    return repository().save(session)
+
+
+@app.post("/api/sessions/{session_id}/summary-notes", response_model=LectureSession)
+async def add_summary_note(
+    session_id: str,
+    payload: SummaryNoteCreate,
+) -> LectureSession:
+    session = get_session_or_404(session_id)
+    session.material.summary_notes.append(SummaryNote(text=payload.text))
     return repository().save(session)
 
 
 @app.post("/api/sessions/{session_id}/chat", response_model=ChatResponse)
 async def chat(session_id: str, payload: ChatRequest) -> ChatResponse:
     session = get_session_or_404(session_id)
+    clean_segments = [segment for segment in session.segments if segment.is_refined]
     return await assistant_or_503().answer(
         payload.message,
-        session.segments,
+        clean_segments,
         session.material,
         payload.history,
     )

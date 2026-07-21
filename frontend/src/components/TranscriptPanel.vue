@@ -1,45 +1,85 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Check, Pencil, Plus, Save, Search, Waves } from '@lucide/vue'
+import {
+  BookCheck,
+  ChevronDown,
+  Clock3,
+  ListChecks,
+  Plus,
+  Search,
+  Sparkles,
+  Waves,
+} from '@lucide/vue'
 
 const props = defineProps({
-  segments: { type: Array, default: () => [] },
-  recording: { type: Boolean, default: false },
-  processing: { type: Boolean, default: false },
-  appendText: { type: Function, required: true },
-  updateText: { type: Function, required: true },
+  summaryCards: { type: Array, default: () => [] },
+  summaryNotes: { type: Array, default: () => [] },
+  appendNote: { type: Function, required: true },
 })
 
 const query = ref('')
-const manualText = ref('')
+const noteText = ref('')
 const adding = ref(false)
 const submitting = ref(false)
-const editingId = ref(null)
-const editText = ref('')
-const editSubmitting = ref(false)
 const scrollArea = ref(null)
 
-const filteredSegments = computed(() => {
+const feedItems = computed(() => [
+  ...props.summaryCards.map((card) => ({
+    id: card.id,
+    type: 'summary',
+    createdAt: card.generated_at,
+    card,
+  })),
+  ...props.summaryNotes.map((note) => ({
+    id: note.id,
+    type: 'note',
+    createdAt: note.created_at,
+    note,
+  })),
+].sort((left, right) => new Date(left.createdAt) - new Date(right.createdAt)))
+
+const filteredItems = computed(() => {
   const keyword = query.value.trim().toLowerCase()
-  if (!keyword) return props.segments
-  return props.segments.filter(
-    (item) => item.text.toLowerCase().includes(keyword) || item.speaker.toLowerCase().includes(keyword),
-  )
+  if (!keyword) return feedItems.value
+  return feedItems.value.filter((item) => {
+    if (item.type === 'note') return item.note.text.toLowerCase().includes(keyword)
+    return item.card.topics?.some((topic) =>
+      [topic.title, topic.summary, ...(topic.key_points || [])]
+        .join(' ')
+        .toLowerCase()
+        .includes(keyword),
+    )
+  })
 })
 
-function timestamp(seconds) {
-  const total = Math.max(0, Math.floor(seconds || 0))
-  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+function koreaTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
 }
 
-async function submitText() {
-  const text = manualText.value.trim()
+function cardTitle(card) {
+  return card.topics?.map((topic) => topic.title).join(' · ') || '수업 요약'
+}
+
+function cardPreview(card) {
+  return card.topics?.map((topic) => topic.summary).join(' ') || ''
+}
+
+async function submitNote() {
+  const text = noteText.value.trim()
   if (!text || submitting.value) return
   submitting.value = true
   try {
-    const succeeded = await props.appendText(text)
+    const succeeded = await props.appendNote(text)
     if (succeeded) {
-      manualText.value = ''
+      noteText.value = ''
       adding.value = false
     }
   } finally {
@@ -48,34 +88,12 @@ async function submitText() {
 }
 
 function cancelAdding() {
-  manualText.value = ''
+  noteText.value = ''
   adding.value = false
 }
 
-function startEditing(segment) {
-  editingId.value = segment.id
-  editText.value = segment.text
-}
-
-function cancelEditing() {
-  editingId.value = null
-  editText.value = ''
-}
-
-async function submitEdit(segment) {
-  const text = editText.value.trim()
-  if (!text || editSubmitting.value || text === segment.text) return
-  editSubmitting.value = true
-  try {
-    const succeeded = await props.updateText(segment.id, text)
-    if (succeeded) cancelEditing()
-  } finally {
-    editSubmitting.value = false
-  }
-}
-
 watch(
-  () => props.segments.length,
+  () => feedItems.value.length,
   async () => {
     await nextTick()
     if (scrollArea.value) scrollArea.value.scrollTop = scrollArea.value.scrollHeight
@@ -84,91 +102,99 @@ watch(
 </script>
 
 <template>
-  <section class="transcript-card">
+  <section class="transcript-card summary-feed">
     <header class="panel-header">
-      <h2>수업 내용</h2>
+      <h2>수업 요약</h2>
       <div class="panel-actions">
         <label class="search-box">
           <Search :size="16" />
-          <input v-model="query" type="search" placeholder="내용 검색" aria-label="수업 내용 검색" />
+          <input v-model="query" type="search" placeholder="요약·필기 검색" aria-label="수업 요약과 필기 검색" />
         </label>
-        <button class="soft-icon-button" title="내용 직접 입력" aria-label="내용 직접 입력" @click="adding = true">
+        <button class="soft-icon-button" title="내 필기 추가" aria-label="내 필기 추가" @click="adding = true">
           <Plus :size="18" />
         </button>
       </div>
     </header>
 
-    <form v-if="adding" class="manual-form" @submit.prevent="submitText">
+    <form v-if="adding" class="manual-form" @submit.prevent="submitNote">
       <div class="manual-form-copy">
-        <strong>내용 직접 입력</strong>
-        <span>빠졌거나 보완할 수업 내용을 입력하세요.</span>
+        <strong>내 필기</strong>
+        <span>기억하고 싶은 내용을 자유롭게 적어 보세요.</span>
       </div>
-      <textarea v-model="manualText" rows="2" maxlength="20000" autofocus placeholder="교수님의 설명을 입력하세요…" />
+      <textarea v-model="noteText" rows="2" maxlength="20000" autofocus placeholder="내가 정리하고 싶은 내용을 입력하세요…" />
       <div class="manual-form-actions">
         <button type="button" class="form-button form-button--secondary" @click="cancelAdding">취소</button>
-        <button type="submit" class="form-button form-button--primary" :disabled="!manualText.trim() || submitting">
-          <Plus :size="14" /> 추가
+        <button type="submit" class="form-button form-button--primary" :disabled="!noteText.trim() || submitting">
+          <Plus :size="14" /> 저장
         </button>
       </div>
     </form>
 
-    <div ref="scrollArea" class="transcript-scroll">
-      <div v-if="!filteredSegments.length" class="empty-transcript">
+    <div ref="scrollArea" class="transcript-scroll summary-card-list">
+      <div v-if="!filteredItems.length" class="empty-transcript">
         <span class="empty-wave"><Waves :size="30" /></span>
-        <h3>{{ query ? '검색 결과가 없어요' : '아직 들려온 내용이 없어요' }}</h3>
-        <p>{{ query ? '다른 단어로 검색해 보세요.' : '녹음을 시작하면 5초 무음 또는 최대 30초 단위로 수업 내용이 표시됩니다.' }}</p>
+        <h3>{{ query ? '검색 결과가 없어요' : '요약 내용이 여기 표시돼요' }}</h3>
+        <p v-if="query">다른 단어로 검색해 보세요.</p>
       </div>
 
-      <article v-for="segment in filteredSegments" :key="segment.id" class="transcript-row">
-        <time>{{ timestamp(segment.start_seconds) }}</time>
-        <div class="speaker-avatar">교</div>
-        <div class="transcript-content">
-          <div class="speaker-line">
-            <div class="speaker-meta">
-              <strong>{{ segment.speaker }}</strong>
-              <span v-if="segment.confidence" class="confidence">
-                <Check :size="12" /> {{ Math.round(segment.confidence * 100) }}%
-              </span>
-            </div>
-            <button
-              v-if="editingId !== segment.id"
-              type="button"
-              class="segment-edit-button"
-              :aria-label="`${timestamp(segment.start_seconds)} 수업 내용 수정`"
-              @click="startEditing(segment)"
+      <article
+        v-for="item in filteredItems"
+        :key="`${item.type}-${item.id}`"
+        class="feed-message"
+        :class="`feed-message--${item.type}`"
+      >
+        <div v-if="item.type === 'summary'" class="feed-sender">
+          <span class="feed-avatar">교</span>
+          <strong>교수님</strong>
+          <time><Clock3 :size="11" /> {{ koreaTime(item.createdAt) }}</time>
+        </div>
+        <div v-else class="feed-sender feed-sender--me">
+          <time><Clock3 :size="11" /> {{ koreaTime(item.createdAt) }}</time>
+          <strong>나</strong>
+          <span class="feed-avatar feed-avatar--me">나</span>
+        </div>
+
+        <details v-if="item.type === 'summary'" class="summary-card">
+          <summary>
+            <span class="summary-card-icon"><Sparkles :size="18" /></span>
+            <span class="summary-card-heading">
+              <span class="summary-card-meta"><em>{{ item.card.topics?.length || 0 }}개 주제</em></span>
+              <strong>{{ cardTitle(item.card) }}</strong>
+              <span class="summary-card-preview">{{ cardPreview(item.card) }}</span>
+            </span>
+            <span class="summary-card-toggle">
+              펼쳐보기 <ChevronDown :size="16" />
+            </span>
+          </summary>
+
+          <div class="summary-card-body">
+            <section
+              v-for="(topic, topicIndex) in item.card.topics"
+              :key="`${item.card.id}-${topic.title}`"
+              class="summary-topic"
             >
-              <Pencil :size="12" /> 수정
-            </button>
-          </div>
-          <form v-if="editingId === segment.id" class="segment-edit-form" @submit.prevent="submitEdit(segment)">
-            <textarea
-              v-model="editText"
-              rows="3"
-              maxlength="20000"
-              aria-label="수업 내용 수정"
-              autofocus
-              @keydown.esc="cancelEditing"
-            />
-            <div class="segment-edit-actions">
-              <button type="button" class="form-button form-button--secondary" @click="cancelEditing">취소</button>
-              <button
-                type="submit"
-                class="form-button form-button--primary"
-                :disabled="!editText.trim() || editText.trim() === segment.text || editSubmitting"
-              >
-                <Save :size="13" /> 저장
-              </button>
+              <div class="summary-topic-heading">
+                <span>{{ String(topicIndex + 1).padStart(2, '0') }}</span>
+                <h3>{{ topic.title }}</h3>
+              </div>
+              <p>{{ topic.summary }}</p>
+              <div v-if="topic.key_points?.length" class="summary-key-points">
+                <strong><ListChecks :size="14" /> Key Points</strong>
+                <ul>
+                  <li v-for="point in topic.key_points" :key="point">{{ point }}</li>
+                </ul>
+              </div>
+            </section>
+            <div class="summary-grounding-note">
+              <BookCheck :size="14" /> 수업 발언만 근거로 생성된 요약입니다.
             </div>
-          </form>
-          <p v-else>{{ segment.text }}</p>
+          </div>
+        </details>
+
+        <div v-else class="personal-note-bubble">
+          <p>{{ item.note.text }}</p>
         </div>
       </article>
-
-      <div v-if="recording || processing" class="listening-row">
-        <span class="listening-bars"><i /><i /><i /><i /></span>
-        <span>{{ processing ? '방금 들은 내용을 정리하고 있어요…' : '교수님의 설명을 듣고 있어요…' }}</span>
-      </div>
     </div>
-
   </section>
 </template>

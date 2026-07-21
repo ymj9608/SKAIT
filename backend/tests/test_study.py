@@ -3,12 +3,21 @@ from pathlib import Path
 import unittest
 
 from app.config import Settings
-from app.schemas import LearningItem, TranscriptSegment
+from app.schemas import (
+    BatchSummaryResult,
+    LearningItem,
+    SummaryCard,
+    SummaryTopic,
+    TranscriptSegment,
+)
 from app.services.stt import MlxWhisperSpeechToText
 from app.services.study import (
     HuggingFaceStudyAssistant,
     LocalStudyAssistant,
     OllamaStudyAssistant,
+    batch_summary_from_payload,
+    build_batch_summary_messages,
+    build_transcript_refinement_messages,
     build_learning_item_detection_messages,
     build_recent_learning_context,
     build_summary_context,
@@ -17,6 +26,8 @@ from app.services.study import (
     format_timestamp,
     merge_learning_items,
     rank_sources,
+    refined_transcript_from_payload,
+    remove_duplicate_topics,
 )
 
 
@@ -35,6 +46,166 @@ class StudyServiceTests(unittest.TestCase):
 
     def test_timestamp(self) -> None:
         self.assertEqual(format_timestamp(125), "02:05")
+
+    def test_transcript_refinement_prompt_uses_clean_context(self) -> None:
+        messages = build_transcript_refinement_messages(
+            "정답 레이블은 `y_train`에 저장했습니다.",
+            "와이 언더바 트레인의 평균을 구합니다",
+        )
+        self.assertIn("transcription, not summarization", messages[0]["content"])
+        self.assertIn("Never invent", messages[0]["content"])
+        self.assertIn("`y_train`", messages[-1]["content"])
+        self.assertIn("와이 언더바", messages[-1]["content"])
+        self.assertTrue(
+            any(
+                message["role"] == "assistant"
+                and "이상치(Outlier)" in message["content"]
+                for message in messages
+            )
+        )
+
+    def test_refined_transcript_requires_explicit_usable_content(self) -> None:
+        self.assertIsNone(
+            refined_transcript_from_payload(
+                {"has_usable_content": False, "clean_transcript": "추측된 내용"}
+            )
+        )
+        self.assertEqual(
+            refined_transcript_from_payload(
+                {
+                    "has_usable_content": True,
+                    "clean_transcript": "  `y_train`의 평균을 사용합니다.  ",
+                }
+            ),
+            "`y_train`의 평균을 사용합니다.",
+        )
+
+    def test_ollama_transcript_refinement_uses_zero_temperature(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
+        captured = {}
+
+        def fake_chat(messages, max_tokens=700, temperature=0.2):
+            captured.update(
+                {
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            return """{
+              "has_usable_content": true,
+              "clean_transcript": "`y_train`의 평균을 기준으로 모델을 만듭니다."
+            }"""
+
+        assistant._chat = fake_chat
+        cleaned = asyncio.run(
+            assistant.refine_transcript(
+                "정답은 `y_train`입니다.",
+                "와이 언더바 트레인 평균으로 모델을 만듭니다",
+            )
+        )
+        self.assertEqual(
+            cleaned,
+            "`y_train`의 평균을 기준으로 모델을 만듭니다.",
+        )
+        self.assertEqual(captured["temperature"], 0.0)
+        self.assertEqual(captured["max_tokens"], 600)
+
+    def test_batch_prompt_carries_previous_summary_and_enforces_grounding(self) -> None:
+        messages = build_batch_summary_messages(
+            self.segments,
+            "직전에는 REST API 요청을 설명했습니다.",
+            ["REST API 요청"],
+        )
+        self.assertIn("only factual evidence", messages[0]["content"])
+        self.assertIn("has_meaningful_content=false", messages[0]["content"])
+        self.assertIn("at most two", messages[0]["content"])
+        self.assertIn("직전에는 REST API", messages[-1]["content"])
+        self.assertIn('"REST API 요청"', messages[-1]["content"])
+        self.assertIn(self.segments[0].text, messages[-1]["content"])
+        self.assertTrue(
+            any(
+                message["role"] == "assistant"
+                and '"has_meaningful_content":false' in message["content"].replace(" ", "")
+                for message in messages
+            )
+        )
+
+    def test_batch_payload_omits_meaningless_content_and_limits_topics(self) -> None:
+        meaningless = batch_summary_from_payload(
+            {
+                "has_meaningful_content": False,
+                "topics": [{"title": "무시", "summary": "노출되면 안 됩니다."}],
+            }
+        )
+        self.assertFalse(meaningless.has_meaningful_content)
+        self.assertEqual(meaningless.topics, [])
+
+        meaningful = batch_summary_from_payload(
+            {
+                "has_meaningful_content": True,
+                "topics": [
+                    {
+                        "title": f"주제 {index}",
+                        "summary": f"수업에서 확인한 요약 {index}입니다.",
+                        "key_points": ["근거가 있는 핵심입니다."],
+                    }
+                    for index in range(3)
+                ],
+                "learning_items": [],
+            }
+        )
+        self.assertTrue(meaningful.has_meaningful_content)
+        self.assertEqual(len(meaningful.topics), 2)
+
+    def test_duplicate_batch_topic_is_removed_after_model_response(self) -> None:
+        previous = SummaryCard(
+            start_seconds=0,
+            end_seconds=120,
+            topics=[
+                SummaryTopic(
+                    title="REST API 요청",
+                    summary="클라이언트는 HTTP 요청을 보내고 서버는 응답합니다.",
+                    key_points=["요청과 응답으로 통신합니다."],
+                )
+            ],
+        )
+        repeated = BatchSummaryResult(
+            has_meaningful_content=True,
+            topics=[previous.topics[0].model_copy(deep=True)],
+        )
+        filtered = remove_duplicate_topics(repeated, [previous])
+        self.assertFalse(filtered.has_meaningful_content)
+        self.assertEqual(filtered.topics, [])
+
+    def test_batch_summary_calls_llm_even_for_short_two_minute_transcript(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
+        captured = {}
+
+        def fake_chat(messages, max_tokens=700):
+            captured.update({"messages": messages, "max_tokens": max_tokens})
+            return """{
+              "has_meaningful_content": true,
+              "topics": [{
+                "title": "REST API 통신",
+                "summary": "클라이언트와 서버가 HTTP로 통신하는 방식입니다.",
+                "key_points": ["요청과 응답을 사용합니다."]
+              }],
+              "learning_items": []
+            }"""
+
+        assistant._chat = fake_chat
+        result = asyncio.run(
+            assistant.summarize_batch(
+                [self.segments[0]],
+                "직전 요약",
+                ["이전 주제"],
+            )
+        )
+        self.assertTrue(result.has_meaningful_content)
+        self.assertEqual(result.topics[0].title, "REST API 통신")
+        self.assertEqual(captured["max_tokens"], 900)
+        self.assertIn("직전 요약", captured["messages"][-1]["content"])
 
     def test_summary_contains_material(self) -> None:
         material = extractive_summary(self.segments)

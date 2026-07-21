@@ -3,7 +3,10 @@ from typing import Literal
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_serializer, model_validator
+
+
+EMPTY_SUMMARY_TEXT = "아직 정리할 수업 내용이 없습니다. 녹음을 시작하거나 텍스트를 추가해 주세요."
 
 
 def utc_now() -> datetime:
@@ -16,6 +19,9 @@ class TranscriptSegment(BaseModel):
     speaker: str = "교수님"
     text: str = Field(min_length=1)
     confidence: float | None = Field(default=None, ge=0, le=1)
+    # 원시 STT는 내부 감사·재처리용으로만 보관하고 API 응답에는 노출하지 않습니다.
+    raw_text: str | None = Field(default=None, exclude=True)
+    is_refined: bool = Field(default=True, exclude=True)
 
 
 class SourceReference(BaseModel):
@@ -31,13 +37,63 @@ class LearningItem(BaseModel):
     explanation: str = Field(min_length=1, max_length=500)
 
 
+class SummaryTopic(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    summary: str = Field(min_length=1, max_length=800)
+    key_points: list[str] = Field(default_factory=list, max_length=5)
+
+
+class BatchSummaryResult(BaseModel):
+    """LLM의 2분 배치 응답. 의미 없는 구간은 topics가 비어 있어야 합니다."""
+
+    has_meaningful_content: bool = False
+    topics: list[SummaryTopic] = Field(default_factory=list, max_length=2)
+
+
+class SummaryCard(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    start_seconds: float = Field(default=0, ge=0)
+    end_seconds: float = Field(default=0, ge=0)
+    topics: list[SummaryTopic] = Field(min_length=1, max_length=2)
+    source_segment_ids: list[str] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "SummaryCard":
+        if self.end_seconds < self.start_seconds:
+            raise ValueError("요약 종료 시각은 시작 시각보다 빠를 수 없습니다.")
+        return self
+
+
+class SummaryNote(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    text: str = Field(min_length=1, max_length=20_000)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class SummaryNoteCreate(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+
+    @model_validator(mode="after")
+    def normalize_text(self) -> "SummaryNoteCreate":
+        self.text = self.text.strip()
+        if not self.text:
+            raise ValueError("필기 내용을 입력해 주세요.")
+        return self
+
+
 class StudyMaterial(BaseModel):
-    summary: str = "아직 정리할 수업 내용이 없습니다. 녹음을 시작하거나 텍스트를 추가해 주세요."
+    summary: str = EMPTY_SUMMARY_TEXT
     key_points: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     keyword_explanations: dict[str, str] = Field(default_factory=dict)
     learning_items: list[LearningItem] = Field(default_factory=list)
     review_questions: list[str] = Field(default_factory=list)
+    summary_cards: list[SummaryCard] = Field(default_factory=list)
+    summary_notes: list[SummaryNote] = Field(default_factory=list)
+    transcript_refinement_version: int = Field(default=1, ge=1)
+    learning_items_processed_through_seconds: float = Field(default=0, ge=0)
+    summary_processed_through_seconds: float = Field(default=0, ge=0)
 
 
 class LectureSession(BaseModel):
@@ -51,6 +107,49 @@ class LectureSession(BaseModel):
     duration_seconds: float = Field(default=0, ge=0)
     segments: list[TranscriptSegment] = Field(default_factory=list)
     material: StudyMaterial = Field(default_factory=StudyMaterial)
+
+    @field_serializer("segments")
+    def serialize_refined_segments(
+        self,
+        segments: list[TranscriptSegment],
+    ) -> list[dict]:
+        """API와 JSON에는 Qwen 정제를 통과한 전사만 노출합니다."""
+        return [
+            segment.model_dump(mode="json")
+            for segment in segments
+            if segment.is_refined
+        ]
+
+    @model_validator(mode="after")
+    def migrate_legacy_summary_to_card(self) -> "LectureSession":
+        """0.2 이전에 저장한 단일 AI 요약도 원문 대신 카드로 안전하게 표시합니다."""
+        if (
+            self.segments
+            and not self.material.summary_cards
+            and self.material.summary.strip()
+            and self.material.summary != EMPTY_SUMMARY_TEXT
+        ):
+            end_seconds = max(
+                self.duration_seconds,
+                max(segment.start_seconds for segment in self.segments),
+            )
+            self.material.summary_cards = [
+                SummaryCard(
+                    start_seconds=0,
+                    end_seconds=end_seconds,
+                    topics=[
+                        SummaryTopic(
+                            title="이전 수업 요약",
+                            summary=self.material.summary,
+                            key_points=self.material.key_points[:5],
+                        )
+                    ],
+                    source_segment_ids=[segment.id for segment in self.segments],
+                )
+            ]
+            self.material.learning_items_processed_through_seconds = end_seconds
+            self.material.summary_processed_through_seconds = end_seconds
+        return self
 
 
 class SessionCreate(BaseModel):
@@ -143,5 +242,7 @@ class HealthResponse(BaseModel):
     llm_model: str | None = None
     stt_ready: bool
     llm_ready: bool
+    learning_item_batch_seconds: int = 30
+    summary_batch_seconds: int = 120
     stt_error: str | None = None
     llm_error: str | None = None

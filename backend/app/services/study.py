@@ -8,6 +8,7 @@ from urllib.request import Request, urlopen
 
 from ..config import Settings
 from ..schemas import (
+    ChatMessage,
     ChatResponse,
     LearningItem,
     SourceReference,
@@ -494,6 +495,14 @@ def rank_sources(
     ]
 
 
+def build_contextual_query(question: str, history: list[ChatMessage]) -> str:
+    """최근 사용자 발화를 검색어에 보태 생략된 주제를 복원합니다."""
+    previous_questions = [
+        message.content for message in history if message.role == "user"
+    ][-3:]
+    return "\n".join([*previous_questions, question])
+
+
 def extractive_summary(segments: list[TranscriptSegment]) -> StudyMaterial:
     if not segments:
         return StudyMaterial()
@@ -562,7 +571,7 @@ def build_summary_context(
         if chunk[-1].text not in points:
             points.append(chunk[-1].text)
         for point in points:
-            lines.append(f"[{start_label}~{end_label}] 전사 핵심 문장: {point}")
+            lines.append(f"[{start_label}~{end_label}] 수업 기록 핵심 문장: {point}")
     return "\n".join(lines)
 
 
@@ -592,6 +601,7 @@ class StudyAssistant(ABC):
         question: str,
         segments: list[TranscriptSegment],
         material: StudyMaterial,
+        history: list[ChatMessage] | None = None,
     ) -> ChatResponse:
         raise NotImplementedError
 
@@ -618,8 +628,9 @@ class LocalStudyAssistant(StudyAssistant):
         question: str,
         segments: list[TranscriptSegment],
         material: StudyMaterial,
+        history: list[ChatMessage] | None = None,
     ) -> ChatResponse:
-        sources = rank_sources(question, segments)
+        sources = rank_sources(build_contextual_query(question, history or []), segments)
         if not segments:
             message = "아직 참고할 수업 내용이 없어요. 먼저 녹음을 시작하거나 텍스트를 추가해 주세요."
             return ChatResponse(
@@ -753,8 +764,11 @@ Requirements:
         question: str,
         segments: list[TranscriptSegment],
         material: StudyMaterial,
+        history: list[ChatMessage] | None = None,
     ) -> ChatResponse:
-        sources = rank_sources(question, segments)
+        history = history or []
+        contextual_question = build_contextual_query(question, history)
+        sources = rank_sources(contextual_question, segments)
         context = (
             "\n".join(
                 f"[{format_timestamp(source.start_seconds)}] {source.speaker}: {source.excerpt}"
@@ -764,7 +778,7 @@ Requirements:
             else "관련 수업 기록 없음"
         )
         verified_guidance = ""
-        normalized_question = question.replace(" ", "").lower()
+        normalized_question = contextual_question.replace(" ", "").lower()
         if "화살표함수" in normalized_question:
             verified_guidance = """
 검증된 AI 보충 지침:
@@ -788,7 +802,8 @@ Requirements:
 8. 자바스크립트 화살표 함수 질문이라면, 자체 this가 없고 정의된 위치의 this를 사용하는 lexical this,
    콜백에서 this가 바뀌는 문제를 줄이는 용도, 객체 메서드·생성자로 쓸 때의 주의점을 정확히 설명하세요.
    Promise나 비동기 처리를 화살표 함수 자체가 제공하는 기능처럼 표현하지 마세요.
-9. 반드시 JSON 객체만 출력하세요.
+9. 이전 대화를 활용해 '그거', '그 기능', '그럼' 같은 지시어와 생략된 주제를 해석하세요.
+10. 반드시 JSON 객체만 출력하세요.
 
 수업 기록:
 {context}
@@ -812,9 +827,14 @@ JSON 형식:
                         "role": "system",
                         "content": (
                             "당신은 수업 근거와 일반 지식을 엄격하게 구분하는 한국어 학습 튜터입니다. "
-                            "수업에서 다루지 않은 개념도 사전학습 지식으로 친절하게 보충하세요."
+                            "수업에서 다루지 않은 개념도 사전학습 지식으로 친절하게 보충하세요. "
+                            "이전 대화에서 지시어의 대상과 생략된 주제를 파악하세요."
                         ),
                     },
+                    *[
+                        {"role": message.role, "content": message.content}
+                        for message in history
+                    ],
                     {"role": "user", "content": prompt},
                 ],
                 1000,
@@ -823,7 +843,7 @@ JSON 형식:
                 raise ValueError("LLM이 빈 응답을 반환했습니다.")
         except Exception as exc:
             logger.warning("%s chat request failed (%s): %s", self.name, self.model, exc)
-            return await super().answer(question, segments, material)
+            return await super().answer(question, segments, material, history)
 
         try:
             cleaned = re.sub(r"^```(?:json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()

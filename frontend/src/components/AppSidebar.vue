@@ -1,5 +1,6 @@
 <script setup>
-import { BookOpen, ChevronLeft, Clock3, MonitorPlay, Plus, Radio, Sparkles } from '@lucide/vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { BookOpen, ChevronLeft, EllipsisVertical, Pencil, Plus, Sparkles, Trash2 } from '@lucide/vue'
 
 defineProps({
   sessions: { type: Array, default: () => [] },
@@ -7,7 +8,8 @@ defineProps({
   open: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['select', 'new', 'close'])
+const emit = defineEmits(['select', 'new', 'close', 'rename', 'delete'])
+const activeMenuId = ref('')
 
 function formatDate(value) {
   const date = new Date(value)
@@ -15,6 +17,33 @@ function formatDate(value) {
   if (date.toDateString() === today.toDateString()) return '오늘'
   return new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(date)
 }
+
+function selectSession(id) {
+  activeMenuId.value = ''
+  emit('select', id)
+}
+
+function toggleMenu(id) {
+  activeMenuId.value = activeMenuId.value === id ? '' : id
+}
+
+function renameSession(session) {
+  const title = window.prompt('수업 제목을 입력해 주세요.', session.title)?.trim()
+  activeMenuId.value = ''
+  if (title && title !== session.title) emit('rename', { id: session.id, title })
+}
+
+function deleteSession(session) {
+  activeMenuId.value = ''
+  if (window.confirm(`“${session.title}” 수업을 삭제할까요?`)) emit('delete', session.id)
+}
+
+function closeMenu() {
+  activeMenuId.value = ''
+}
+
+onMounted(() => document.addEventListener('click', closeMenu))
+onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
 </script>
 
 <template>
@@ -40,42 +69,34 @@ function formatDate(value) {
     </div>
 
     <nav class="session-list" aria-label="학습 세션 목록">
-      <button
+      <div
         v-for="session in sessions"
         :key="session.id"
-        class="session-item"
-        :class="{ 'session-item--active': session.id === activeId }"
-        @click="emit('select', session.id)"
+        class="session-entry"
+        :class="{ 'session-entry--active': session.id === activeId }"
       >
-        <span class="session-icon">
-          <Radio v-if="session.status === 'recording'" :size="16" />
-          <MonitorPlay v-else-if="session.source_type === 'youtube'" :size="16" />
-          <Clock3 v-else :size="16" />
-        </span>
-        <span class="session-copy">
+        <button class="session-item" @click="selectSession(session.id)">
           <strong>{{ session.title }}</strong>
-          <small>{{ formatDate(session.created_at) }} · {{ session.course_name }}</small>
-        </span>
-      </button>
+          <time :datetime="session.created_at">{{ formatDate(session.created_at) }}</time>
+        </button>
+        <button
+          class="session-menu-button"
+          :aria-label="`${session.title} 메뉴`"
+          :aria-expanded="activeMenuId === session.id"
+          @click.stop="toggleMenu(session.id)"
+        >
+          <EllipsisVertical :size="17" />
+        </button>
+        <div v-if="activeMenuId === session.id" class="session-menu" @click.stop>
+          <button @click="renameSession(session)"><Pencil :size="14" /> 제목 수정</button>
+          <button class="session-menu-delete" @click="deleteSession(session)"><Trash2 :size="14" /> 삭제</button>
+        </div>
+      </div>
       <div v-if="!sessions.length" class="sidebar-empty">
         <Sparkles :size="20" />
         첫 학습을 시작해 보세요.
       </div>
     </nav>
-
-    <div class="sidebar-tip">
-      <span class="tip-orbit"><Sparkles :size="17" /></span>
-      <div>
-        <strong>비전공자 모드</strong>
-        <p>어려운 개념을 쉬운 말과 예시로 바꿔 드려요.</p>
-      </div>
-    </div>
-
-    <div class="profile-row">
-      <span class="avatar">SK</span>
-      <span><strong>SKALA 학습자</strong><small>나의 학습 공간</small></span>
-      <span class="online-dot" title="온라인" />
-    </div>
   </aside>
   <button v-if="open" class="sidebar-backdrop" aria-label="메뉴 닫기" @click="emit('close')" />
 </template>

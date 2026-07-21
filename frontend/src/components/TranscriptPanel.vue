@@ -1,18 +1,22 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { Captions, Check, Plus, Search, Send, Waves } from '@lucide/vue'
+import { Check, Pencil, Plus, Save, Search, Waves } from '@lucide/vue'
 
 const props = defineProps({
   segments: { type: Array, default: () => [] },
   recording: { type: Boolean, default: false },
   processing: { type: Boolean, default: false },
   appendText: { type: Function, required: true },
+  updateText: { type: Function, required: true },
 })
 
 const query = ref('')
 const manualText = ref('')
 const adding = ref(false)
 const submitting = ref(false)
+const editingId = ref(null)
+const editText = ref('')
+const editSubmitting = ref(false)
 const scrollArea = ref(null)
 
 const filteredSegments = computed(() => {
@@ -43,6 +47,33 @@ async function submitText() {
   }
 }
 
+function cancelAdding() {
+  manualText.value = ''
+  adding.value = false
+}
+
+function startEditing(segment) {
+  editingId.value = segment.id
+  editText.value = segment.text
+}
+
+function cancelEditing() {
+  editingId.value = null
+  editText.value = ''
+}
+
+async function submitEdit(segment) {
+  const text = editText.value.trim()
+  if (!text || editSubmitting.value || text === segment.text) return
+  editSubmitting.value = true
+  try {
+    const succeeded = await props.updateText(segment.id, text)
+    if (succeeded) cancelEditing()
+  } finally {
+    editSubmitting.value = false
+  }
+}
+
 watch(
   () => props.segments.length,
   async () => {
@@ -55,30 +86,30 @@ watch(
 <template>
   <section class="transcript-card">
     <header class="panel-header">
-      <div>
-        <span class="eyebrow"><Captions :size="14" /> LIVE TRANSCRIPT</span>
-        <h2>수업 전사</h2>
-      </div>
+      <h2>수업 내용</h2>
       <div class="panel-actions">
         <label class="search-box">
           <Search :size="16" />
-          <input v-model="query" type="search" placeholder="내용 검색" aria-label="전사 내용 검색" />
+          <input v-model="query" type="search" placeholder="내용 검색" aria-label="수업 내용 검색" />
         </label>
-        <button class="soft-icon-button" title="텍스트 직접 추가" @click="adding = !adding">
+        <button class="soft-icon-button" title="내용 직접 입력" aria-label="내용 직접 입력" @click="adding = true">
           <Plus :size="18" />
         </button>
       </div>
     </header>
 
     <form v-if="adding" class="manual-form" @submit.prevent="submitText">
-      <div>
-        <strong>전사 내용 직접 추가</strong>
-        <span>모델이 놓친 내용을 보완할 수 있어요.</span>
+      <div class="manual-form-copy">
+        <strong>내용 직접 입력</strong>
+        <span>빠졌거나 보완할 수업 내용을 입력하세요.</span>
       </div>
       <textarea v-model="manualText" rows="2" maxlength="20000" autofocus placeholder="교수님의 설명을 입력하세요…" />
-      <button type="submit" class="send-square" :disabled="!manualText.trim() || submitting">
-        <Send :size="17" />
-      </button>
+      <div class="manual-form-actions">
+        <button type="button" class="form-button form-button--secondary" @click="cancelAdding">취소</button>
+        <button type="submit" class="form-button form-button--primary" :disabled="!manualText.trim() || submitting">
+          <Plus :size="14" /> 추가
+        </button>
+      </div>
     </form>
 
     <div ref="scrollArea" class="transcript-scroll">
@@ -93,12 +124,43 @@ watch(
         <div class="speaker-avatar">교</div>
         <div class="transcript-content">
           <div class="speaker-line">
-            <strong>{{ segment.speaker }}</strong>
-            <span v-if="segment.confidence" class="confidence">
-              <Check :size="12" /> {{ Math.round(segment.confidence * 100) }}%
-            </span>
+            <div class="speaker-meta">
+              <strong>{{ segment.speaker }}</strong>
+              <span v-if="segment.confidence" class="confidence">
+                <Check :size="12" /> {{ Math.round(segment.confidence * 100) }}%
+              </span>
+            </div>
+            <button
+              v-if="editingId !== segment.id"
+              type="button"
+              class="segment-edit-button"
+              :aria-label="`${timestamp(segment.start_seconds)} 수업 내용 수정`"
+              @click="startEditing(segment)"
+            >
+              <Pencil :size="12" /> 수정
+            </button>
           </div>
-          <p>{{ segment.text }}</p>
+          <form v-if="editingId === segment.id" class="segment-edit-form" @submit.prevent="submitEdit(segment)">
+            <textarea
+              v-model="editText"
+              rows="3"
+              maxlength="20000"
+              aria-label="수업 내용 수정"
+              autofocus
+              @keydown.esc="cancelEditing"
+            />
+            <div class="segment-edit-actions">
+              <button type="button" class="form-button form-button--secondary" @click="cancelEditing">취소</button>
+              <button
+                type="submit"
+                class="form-button form-button--primary"
+                :disabled="!editText.trim() || editText.trim() === segment.text || editSubmitting"
+              >
+                <Save :size="13" /> 저장
+              </button>
+            </div>
+          </form>
+          <p v-else>{{ segment.text }}</p>
         </div>
       </article>
 
@@ -108,9 +170,5 @@ watch(
       </div>
     </div>
 
-    <footer class="transcript-footer">
-      <span><i class="live-indicator" :class="{ 'is-live': recording }" /> {{ recording ? '실시간 수신 중' : '녹음 대기' }}</span>
-      <span>총 {{ segments.length }}개 구간</span>
-    </footer>
   </section>
 </template>

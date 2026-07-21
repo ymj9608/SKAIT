@@ -66,6 +66,9 @@ class SessionCreate(BaseModel):
             return self
 
         value = (self.source_url or "").strip()
+        if not value:
+            self.source_url = None
+            return self
         parsed = urlparse(value)
         allowed_hosts = {
             "youtube.com",
@@ -80,10 +83,32 @@ class SessionCreate(BaseModel):
         return self
 
 
+class SessionUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def normalize_title(self) -> "SessionUpdate":
+        self.title = self.title.strip()
+        if not self.title:
+            raise ValueError("수업 제목을 입력해 주세요.")
+        return self
+
+
 class TranscriptCreate(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
     speaker: str = Field(default="교수님", max_length=30)
     start_seconds: float | None = Field(default=None, ge=0)
+
+
+class TranscriptUpdate(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+
+    @model_validator(mode="after")
+    def normalize_text(self) -> "TranscriptUpdate":
+        self.text = self.text.strip()
+        if not self.text:
+            raise ValueError("수업 내용을 입력해 주세요.")
+        return self
 
 
 class StatusUpdate(BaseModel):
@@ -91,8 +116,14 @@ class StatusUpdate(BaseModel):
     duration_seconds: float | None = Field(default=None, ge=0)
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4_000)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2_000)
+    history: list[ChatMessage] = Field(default_factory=list, max_length=12)
 
 
 class ChatResponse(BaseModel):

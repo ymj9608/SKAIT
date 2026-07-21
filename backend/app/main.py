@@ -12,9 +12,11 @@ from .schemas import (
     HealthResponse,
     LectureSession,
     SessionCreate,
+    SessionUpdate,
     StatusUpdate,
     TranscriptCreate,
     TranscriptSegment,
+    TranscriptUpdate,
 )
 from .services.stt import SpeechToText, build_stt
 from .services.study import (
@@ -55,7 +57,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Zoom·YouTube 수업 음성을 전사하고 요약·질의응답을 제공하는 로컬 학습 에이전트 API",
+    description="Zoom·YouTube 수업 음성을 기록하고 요약·질의응답을 제공하는 로컬 학습 에이전트 API",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -163,6 +165,13 @@ async def get_session(session_id: str) -> LectureSession:
     return get_session_or_404(session_id)
 
 
+@app.patch("/api/sessions/{session_id}", response_model=LectureSession)
+async def update_session(session_id: str, payload: SessionUpdate) -> LectureSession:
+    session = get_session_or_404(session_id)
+    session.title = payload.title
+    return repository().save(session)
+
+
 @app.patch("/api/sessions/{session_id}/status", response_model=LectureSession)
 async def update_status(session_id: str, payload: StatusUpdate) -> LectureSession:
     session = get_session_or_404(session_id)
@@ -195,6 +204,24 @@ async def append_transcript(session_id: str, payload: TranscriptCreate) -> Lectu
     # 직접 입력은 테스트·보정 흐름이므로 즉시 AI 노트를 갱신합니다.
     await regenerate_material(session)
     await detect_latest_learning_items(session)
+    return repository().save(session)
+
+
+@app.patch(
+    "/api/sessions/{session_id}/transcript/{segment_id}",
+    response_model=LectureSession,
+)
+async def update_transcript(
+    session_id: str,
+    segment_id: str,
+    payload: TranscriptUpdate,
+) -> LectureSession:
+    session = get_session_or_404(session_id)
+    segment = next((item for item in session.segments if item.id == segment_id), None)
+    if segment is None:
+        raise HTTPException(status_code=404, detail="수업 내용을 찾을 수 없습니다.")
+    segment.text = payload.text
+    await regenerate_material(session)
     return repository().save(session)
 
 
@@ -260,7 +287,10 @@ async def refresh_summary(session_id: str) -> LectureSession:
 async def chat(session_id: str, payload: ChatRequest) -> ChatResponse:
     session = get_session_or_404(session_id)
     return await assistant_or_503().answer(
-        payload.message, session.segments, session.material
+        payload.message,
+        session.segments,
+        session.material,
+        payload.history,
     )
 
 

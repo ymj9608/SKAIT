@@ -83,7 +83,7 @@ BACKEND_PID=$!
 FRONTEND_PID=$!
 
 print ""
-print "Re:Class 로컬 학습 에이전트를 시작했습니다."
+print "SKAIT 로컬 AI 학습 도우미를 시작했습니다."
 print "웹사이트: http://127.0.0.1:5173"
 print "API 상태: http://127.0.0.1:8000/api/health"
 print "종료하려면 Ctrl+C를 누르세요."

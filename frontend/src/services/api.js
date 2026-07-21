@@ -47,6 +47,18 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
+  updateTranscripts: (id, updates) =>
+    request(`/sessions/${id}/transcript`, {
+      method: 'PATCH',
+      body: JSON.stringify({ updates }),
+    }),
+  uploadReference: (id, file) => {
+    const data = new FormData()
+    data.append('document', file, file.name)
+    return request(`/sessions/${id}/reference`, { method: 'POST', body: data })
+  },
+  deleteReference: (id) =>
+    request(`/sessions/${id}/reference`, { method: 'DELETE' }),
   uploadAudio: (id, blob, startSeconds, endSeconds) => {
     const data = new FormData()
     const extension = blob.type.includes('ogg') ? 'ogg' : 'webm'
@@ -56,6 +68,11 @@ export const api = {
     return request(`/sessions/${id}/audio`, { method: 'POST', body: data })
   },
   refreshSummary: (id) => request(`/sessions/${id}/summary`, { method: 'POST' }),
+  updateSummaries: (id, payload) =>
+    request(`/sessions/${id}/summary`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
   addSummaryNote: (id, text) =>
     request(`/sessions/${id}/summary-notes`, {
       method: 'POST',

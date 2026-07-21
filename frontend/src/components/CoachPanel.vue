@@ -5,19 +5,22 @@ import {
   BookCheck,
   Bot,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   MessageCircleQuestion,
-  PanelRightClose,
+  RotateCcw,
   Sparkles,
+  X,
 } from '@lucide/vue'
 import { api } from '../services/api'
+import { selectQuizItems } from '../utils/quiz'
 
 const props = defineProps({
   session: { type: Object, default: null },
   llmReady: { type: Boolean, default: true },
 })
-const emit = defineEmits(['updated', 'error', 'toggle'])
+const emit = defineEmits(['updated', 'error'])
 
 const tab = ref('note')
 const question = ref('')
@@ -26,8 +29,13 @@ const chatScroll = ref(null)
 const messages = ref([])
 const panelWidth = ref(390)
 const resizingPanel = ref(false)
+const quizOpen = ref(false)
+const quizIndex = ref(0)
+const quizSelected = ref('')
+const quizChecked = ref(false)
+const quizAnswers = ref({})
 
-const PANEL_WIDTH_STORAGE_KEY = 'reclass-coach-panel-width'
+const PANEL_WIDTH_STORAGE_KEY = 'skait-coach-panel-width'
 const MIN_PANEL_WIDTH = 320
 const MAX_PANEL_WIDTH = 680
 
@@ -44,6 +52,75 @@ const learningItems = computed(() => {
 })
 const termItems = computed(() => learningItems.value.filter((item) => item.type === 'term'))
 const conceptItems = computed(() => learningItems.value.filter((item) => item.type === 'concept'))
+const quizItems = computed(() => selectQuizItems(learningItems.value))
+const activeQuizItem = computed(() => quizItems.value[quizIndex.value] || null)
+const quizOptions = computed(() => {
+  const item = activeQuizItem.value
+  if (!item) return []
+  const fallbackOptions = [
+    '화면의 모양과 배치만 꾸미기 위한 시각적 규칙입니다.',
+    '컴퓨터의 전원을 직접 제어하는 물리적인 장치입니다.',
+    '인터넷 연결 속도를 나타내기 위해 사용하는 측정 단위입니다.',
+  ]
+  const distractors = quizItems.value
+    .filter((candidate) => candidate.title !== item.title)
+    .map((candidate) => candidate.explanation)
+  const uniqueDistractors = [...new Set([...distractors, ...fallbackOptions])]
+    .filter((option) => option !== item.explanation)
+    .slice(0, 3)
+  const options = [item.explanation, ...uniqueDistractors]
+  const correctPosition = quizIndex.value % options.length
+  options.splice(correctPosition, 0, options.shift())
+  return options
+})
+const quizCorrect = computed(() => quizSelected.value === activeQuizItem.value?.explanation)
+
+function quizItemKey(item) {
+  return item ? `${item.type || 'item'}:${item.title}` : ''
+}
+
+function quizStorageKey(sessionId = props.session?.id) {
+  return sessionId ? `skait-quiz-progress-${sessionId}` : ''
+}
+
+function saveQuizProgress() {
+  const storageKey = quizStorageKey()
+  if (!storageKey || !activeQuizItem.value) return
+  localStorage.setItem(storageKey, JSON.stringify({
+    currentItemKey: quizItemKey(activeQuizItem.value),
+    answers: quizAnswers.value,
+  }))
+}
+
+function restoreCurrentQuizAnswer() {
+  const answer = quizAnswers.value[quizItemKey(activeQuizItem.value)]
+  const selected = answer?.selected || ''
+  quizSelected.value = quizOptions.value.includes(selected) ? selected : ''
+  quizChecked.value = Boolean(answer?.checked && quizSelected.value)
+}
+
+function loadQuizProgress() {
+  quizIndex.value = 0
+  quizAnswers.value = {}
+  const storageKey = quizStorageKey()
+  if (!storageKey) return
+  try {
+    const progress = JSON.parse(localStorage.getItem(storageKey) || '{}')
+    if (progress.answers && typeof progress.answers === 'object' && !Array.isArray(progress.answers)) {
+      const validItemKeys = new Set(quizItems.value.map(quizItemKey))
+      quizAnswers.value = Object.fromEntries(
+        Object.entries(progress.answers).filter(([itemKey]) => validItemKeys.has(itemKey)),
+      )
+    }
+    const savedIndex = quizItems.value.findIndex(
+      (item) => quizItemKey(item) === progress.currentItemKey,
+    )
+    if (savedIndex >= 0) quizIndex.value = savedIndex
+  } catch {
+    localStorage.removeItem(storageKey)
+  }
+  restoreCurrentQuizAnswer()
+}
 
 function allowedPanelWidth(width) {
   const compactLayout = window.innerWidth <= 1180
@@ -101,6 +178,11 @@ function timestamp(seconds) {
 }
 
 function resetChat() {
+  quizOpen.value = false
+  quizIndex.value = 0
+  quizSelected.value = ''
+  quizChecked.value = false
+  quizAnswers.value = {}
   messages.value = [
     {
       role: 'assistant',
@@ -177,6 +259,64 @@ async function sendQuestion(prompt) {
   }
 }
 
+function openQuiz() {
+  if (!quizItems.value.length) {
+    emit('error', '객관식 퀴즈를 만들 수 있는 용어나 중요 개념이 아직 없습니다.')
+    return
+  }
+  loadQuizProgress()
+  quizOpen.value = true
+}
+
+function closeQuiz() {
+  saveQuizProgress()
+  quizOpen.value = false
+}
+
+function showNextQuiz() {
+  quizIndex.value = (quizIndex.value + 1) % quizItems.value.length
+  restoreCurrentQuizAnswer()
+  saveQuizProgress()
+}
+
+function showPreviousQuiz() {
+  quizIndex.value = (quizIndex.value - 1 + quizItems.value.length) % quizItems.value.length
+  restoreCurrentQuizAnswer()
+  saveQuizProgress()
+}
+
+function retryQuiz() {
+  delete quizAnswers.value[quizItemKey(activeQuizItem.value)]
+  quizSelected.value = ''
+  quizChecked.value = false
+  saveQuizProgress()
+}
+
+function selectQuizOption(option) {
+  if (quizChecked.value) return
+  quizSelected.value = option
+  quizAnswers.value[quizItemKey(activeQuizItem.value)] = {
+    selected: option,
+    checked: false,
+  }
+  saveQuizProgress()
+}
+
+function submitQuiz() {
+  if (quizChecked.value) {
+    showNextQuiz()
+    return
+  }
+  if (quizSelected.value) {
+    quizChecked.value = true
+    quizAnswers.value[quizItemKey(activeQuizItem.value)] = {
+      selected: quizSelected.value,
+      checked: true,
+    }
+    saveQuizProgress()
+  }
+}
+
 </script>
 
 <template>
@@ -193,17 +333,6 @@ async function sendQuestion(prompt) {
       @pointerdown="startPanelResize"
       @dblclick="resetPanelWidth"
     />
-    <header class="coach-header">
-      <div class="coach-heading">
-        <button class="coach-panel-toggle" aria-label="AI 도우미 숨기기" title="AI 도우미 숨기기" @click="emit('toggle')">
-          <PanelRightClose :size="17" />
-        </button>
-        <div class="coach-title">
-          <span class="ai-orb"><Sparkles :size="18" /></span>
-          <div><strong>AI 도우미</strong><span>수업 전용 튜터</span></div>
-        </div>
-      </div>
-    </header>
 
     <div class="coach-tabs" role="tablist">
       <button :class="{ active: tab === 'note' }" @click="tab = 'note'">
@@ -216,13 +345,23 @@ async function sendQuestion(prompt) {
     </div>
 
     <div v-if="tab === 'note'" class="note-scroll">
+      <section v-if="quizItems.length" class="review-card">
+        <div class="review-card-icon"><BookCheck :size="21" /></div>
+        <div>
+          <strong>3분 복습</strong>
+          <p>오늘 배운 내용을 간단한 퀴즈로 복습해 볼까요?</p>
+          <button @click="openQuiz">
+            복습 시작 <ChevronRight :size="15" />
+          </button>
+        </div>
+      </section>
+
       <section class="note-section learning-section learning-section--terms">
         <div class="section-heading">
           <span>
             <BookCheck :size="17" /> 알아둘 용어
             <small class="learning-item-count">{{ termItems.length }}</small>
           </span>
-          <small class="learning-sort-label">최신순</small>
         </div>
         <div v-if="termItems.length" class="keyword-list">
           <div
@@ -253,7 +392,6 @@ async function sendQuestion(prompt) {
             <Sparkles :size="17" /> 중요 개념
             <small class="learning-item-count learning-item-count--concept">{{ conceptItems.length }}</small>
           </span>
-          <small class="learning-sort-label">최신순</small>
         </div>
         <div v-if="conceptItems.length" class="keyword-list">
           <div
@@ -278,16 +416,6 @@ async function sendQuestion(prompt) {
         </div>
       </section>
 
-      <section v-if="material.review_questions?.length" class="review-card">
-        <div class="review-card-icon"><BookCheck :size="21" /></div>
-        <div>
-          <strong>3분 복습</strong>
-          <p>오늘 배운 내용, 질문으로 확인해 볼까요?</p>
-          <button @click="sendQuestion(material.review_questions[0])">
-            첫 질문 풀기 <ChevronRight :size="15" />
-          </button>
-        </div>
-      </section>
     </div>
 
     <div v-else ref="chatScroll" class="chat-scroll">
@@ -349,4 +477,73 @@ async function sendQuestion(prompt) {
       <small>수업 근거와 AI 사전학습 지식을 구분해 답변합니다.</small>
     </div>
   </aside>
+
+  <Teleport to="body">
+    <Transition name="quiz">
+      <div v-if="quizOpen" class="quiz-backdrop" @click.self="closeQuiz">
+        <form class="quiz-modal" @submit.prevent="submitQuiz" @keydown.esc="closeQuiz">
+          <button type="button" class="modal-close" aria-label="퀴즈 닫기" @click="closeQuiz">
+            <X :size="19" />
+          </button>
+
+          <div class="quiz-heading">
+            <span class="quiz-icon"><BookCheck :size="21" /></span>
+            <div>
+              <small>3분 복습</small>
+              <h2>수업 내용을 확인해 볼까요?</h2>
+            </div>
+            <div class="quiz-progress" aria-label="퀴즈 문제 이동">
+              <button type="button" aria-label="이전 문제" title="이전 문제" :disabled="quizItems.length <= 1" @click="showPreviousQuiz">
+                <ChevronLeft :size="15" />
+              </button>
+              <span>{{ quizIndex + 1 }} / {{ quizItems.length }}</span>
+              <button type="button" aria-label="다음 문제" title="다음 문제" :disabled="quizItems.length <= 1" @click="showNextQuiz">
+                <ChevronRight :size="15" />
+              </button>
+            </div>
+          </div>
+
+          <section class="quiz-question">
+            <small>QUESTION</small>
+            <p>“{{ activeQuizItem?.title }}”에 대한 설명으로 가장 알맞은 것은?</p>
+          </section>
+
+          <div class="quiz-options" role="radiogroup" aria-label="퀴즈 선택지">
+            <button
+              v-for="(option, index) in quizOptions"
+              :key="option"
+              type="button"
+              class="quiz-option"
+              :class="{
+                'quiz-option--selected': quizSelected === option,
+                'quiz-option--correct': quizChecked && option === activeQuizItem?.explanation,
+                'quiz-option--wrong': quizChecked && quizSelected === option && !quizCorrect,
+              }"
+              :aria-checked="quizSelected === option"
+              role="radio"
+              @click="selectQuizOption(option)"
+            >
+              <span>{{ ['A', 'B', 'C', 'D'][index] }}</span>
+              <p>{{ option }}</p>
+              <CheckCircle2 v-if="quizChecked && option === activeQuizItem?.explanation" :size="17" />
+            </button>
+          </div>
+
+          <p v-if="quizChecked" class="quiz-feedback" :class="{ 'quiz-feedback--correct': quizCorrect }">
+            {{ quizCorrect ? '정답이에요! 개념을 잘 이해하고 있어요.' : '정답을 확인했어요. 설명을 한 번 더 읽어보세요.' }}
+          </p>
+
+          <div class="quiz-actions">
+            <button type="button" class="quiz-cancel" @click="closeQuiz">취소</button>
+            <button v-if="quizChecked" type="button" class="quiz-retry" @click="retryQuiz">
+              <RotateCcw :size="14" /> 다시 풀기
+            </button>
+            <button v-if="!quizChecked || quizItems.length > 1" type="submit" class="quiz-submit" :disabled="!quizSelected">
+              {{ quizChecked ? '다음 문제' : '정답 확인' }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </Transition>
+  </Teleport>
 </template>

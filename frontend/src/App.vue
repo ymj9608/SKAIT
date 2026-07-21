@@ -1,17 +1,17 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   CalendarDays,
   CircleStop,
   Cloud,
-  HardDrive,
+  FileText,
   LoaderCircle,
   Menu,
   MonitorPlay,
   MonitorUp,
-  PanelRightOpen,
   Radio,
   Sparkles,
+  Trash2,
   X,
 } from '@lucide/vue'
 import AppSidebar from './components/AppSidebar.vue'
@@ -19,6 +19,7 @@ import CoachPanel from './components/CoachPanel.vue'
 import TranscriptPanel from './components/TranscriptPanel.vue'
 import { useRecorder } from './composables/useRecorder'
 import { api } from './services/api'
+import skaitLogo from './assets/brand/skait-logo.png'
 
 const sessions = ref([])
 const activeSession = ref(null)
@@ -34,14 +35,17 @@ const health = ref({
 const loading = ref(true)
 const loadFailed = ref(false)
 const sidebarOpen = ref(false)
-const coachOpen = ref(true)
+const sidebarCollapsed = ref(false)
 const createModalOpen = ref(false)
 const newTitle = ref('')
 const newSourceType = ref('zoom')
+const newReferenceFile = ref(null)
+const referenceInput = ref(null)
+const uploadingReference = ref(false)
+const deletingReference = ref(false)
 const isFinalizing = ref(false)
 const toast = ref(null)
 let toastTimer = null
-let healthTimer = null
 let recordingSessionId = null
 let finalizationPromise = null
 
@@ -79,29 +83,10 @@ const sessionDate = computed(() => {
   }).format(new Date(activeSession.value.created_at))
 })
 
-const isYoutubeSession = computed(() => activeSession.value?.source_type === 'youtube')
 const recordingActionLabel = computed(() => {
-  if (recorder.isRecording.value) return '변환 종료'
-  return isYoutubeSession.value ? 'YouTube 듣기' : '수업 녹음'
+  if (recorder.isRecording.value) return '학습 종료'
+  return '학습 시작'
 })
-
-const providerLabel = computed(() => {
-  const names = {
-    demo: 'Demo STT',
-    huggingface: 'Hugging Face',
-    faster_whisper: 'Local Whisper',
-    mlx_whisper: 'MLX Whisper',
-  }
-  return names[health.value.stt_provider] || health.value.stt_provider
-})
-
-async function refreshHealth() {
-  try {
-    health.value = await api.health()
-  } catch {
-    health.value = { ...health.value, stt_ready: false, llm_ready: false }
-  }
-}
 
 async function loadApp() {
   loading.value = true
@@ -179,6 +164,7 @@ function openCreateModal() {
   }
   newTitle.value = `새 수업 · ${new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric' }).format(new Date())}`
   newSourceType.value = 'zoom'
+  newReferenceFile.value = null
   createModalOpen.value = true
   sidebarOpen.value = false
 }
@@ -187,17 +173,100 @@ function chooseNewSource(sourceType) {
   newSourceType.value = sourceType
 }
 
+function referenceFileFromEvent(event) {
+  const file = event.target.files?.[0] || null
+  if (!file) return null
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    event.target.value = ''
+    showToast('PDF 파일만 선택할 수 있습니다.')
+    return null
+  }
+  if (file.size > 20 * 1024 * 1024) {
+    event.target.value = ''
+    showToast('PDF는 20MB 이하만 업로드할 수 있습니다.')
+    return null
+  }
+  return file
+}
+
+function chooseNewReference(event) {
+  newReferenceFile.value = referenceFileFromEvent(event)
+}
+
+async function uploadActiveReference(event) {
+  const file = referenceFileFromEvent(event)
+  event.target.value = ''
+  if (!file || !activeSession.value || uploadingReference.value) return
+  uploadingReference.value = true
+  try {
+    replaceSession(await api.uploadReference(activeSession.value.id, file))
+    showToast('PDF 참고 자료를 연결하고 AI 노트를 갱신했습니다.', 'success')
+  } catch (error) {
+    showToast(error.message)
+  } finally {
+    uploadingReference.value = false
+  }
+}
+
+function refreshMaterialInBackground(sessionId) {
+  api.refreshSummary(sessionId).then((session) => {
+    const index = sessions.value.findIndex((item) => item.id === session.id)
+    if (index >= 0) sessions.value.splice(index, 1, session)
+    if (activeSession.value?.id === session.id) {
+      activeSession.value = session
+      showToast('AI 노트까지 업데이트했습니다.', 'success')
+    }
+  }).catch((error) => {
+    showToast(`변경 내용은 저장했지만 AI 노트를 갱신하지 못했습니다. ${error.message}`)
+  })
+}
+
+async function deleteActiveReference() {
+  if (!activeSession.value?.reference_name || deletingReference.value) return
+  const filename = activeSession.value.reference_name
+  if (!window.confirm(`“${filename}” PDF 참고 자료를 삭제할까요?`)) return
+  const sessionId = activeSession.value.id
+  deletingReference.value = true
+  try {
+    replaceSession(await api.deleteReference(sessionId))
+    showToast('PDF 참고 자료를 삭제했습니다. AI 노트를 갱신하고 있습니다.', 'success')
+    refreshMaterialInBackground(sessionId)
+  } catch (error) {
+    showToast(error.message)
+  } finally {
+    deletingReference.value = false
+  }
+}
+
 async function createSession() {
   if (!newTitle.value.trim()) return
   try {
-    const session = await api.createSession({
+    let referenceUploadFailed = false
+    let referenceConnected = false
+    let session = await api.createSession({
       title: newTitle.value.trim(),
       course_name: newSourceType.value === 'youtube' ? 'YouTube' : 'Zoom',
       source_type: newSourceType.value,
     })
     replaceSession(session)
+    if (newReferenceFile.value) {
+      try {
+        session = await api.uploadReference(session.id, newReferenceFile.value)
+        replaceSession(session)
+        referenceConnected = true
+      } catch (error) {
+        referenceUploadFailed = true
+        showToast(`수업은 만들었지만 PDF를 연결하지 못했습니다. ${error.message}`)
+      }
+    }
+    newReferenceFile.value = null
     createModalOpen.value = false
-    showToast('새 학습 세션을 만들었습니다.', 'success')
+    if (!referenceUploadFailed) {
+      showToast(
+        referenceConnected ? '새 학습 세션과 PDF 참고 자료를 연결했습니다.' : '새 학습 세션을 만들었습니다.',
+        'success',
+      )
+    }
   } catch (error) {
     showToast(error.message)
   }
@@ -268,7 +337,19 @@ async function appendSummaryNote(text) {
   if (!activeSession.value) return false
   try {
     replaceSession(await api.addSummaryNote(activeSession.value.id, text))
-    showToast('필기를 저장했습니다.', 'success')
+    showToast('요약을 추가했습니다.', 'success')
+    return true
+  } catch (error) {
+    showToast(error.message)
+    return false
+  }
+}
+
+async function updateSummaries(payload) {
+  if (!activeSession.value) return false
+  try {
+    replaceSession(await api.updateSummaries(activeSession.value.id, payload))
+    showToast('수업 요약을 수정했습니다.', 'success')
     return true
   } catch (error) {
     showToast(error.message)
@@ -278,17 +359,12 @@ async function appendSummaryNote(text) {
 
 onMounted(async () => {
   await loadApp()
-  healthTimer = window.setInterval(refreshHealth, 30_000)
-})
-
-onBeforeUnmount(() => {
-  clearInterval(healthTimer)
 })
 
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'app-shell--sidebar-collapsed': sidebarCollapsed }">
     <AppSidebar
       :sessions="sessions"
       :active-id="activeSession?.id"
@@ -298,22 +374,27 @@ onBeforeUnmount(() => {
       @rename="renameSession"
       @delete="removeSession"
       @close="sidebarOpen = false"
+      @collapse="sidebarCollapsed = true"
     />
 
     <main class="workspace">
       <header class="topbar">
         <div class="topbar-left">
+          <button
+            v-if="sidebarCollapsed"
+            class="sidebar-reopen"
+            aria-label="사이드바 열기"
+            data-tooltip="사이드바 열기"
+            @click="sidebarCollapsed = false"
+          >
+            <img class="sidebar-reopen-logo" :src="skaitLogo" alt="" />
+          </button>
           <button class="mobile-menu" aria-label="수업 목록 열기" @click="sidebarOpen = true">
             <Menu :size="21" />
           </button>
         </div>
 
         <div class="recording-toolbar">
-          <div class="model-status" :title="`STT: ${health.stt_model || providerLabel}`">
-            <HardDrive :size="15" />
-            <span>{{ providerLabel }}</span>
-            <i :class="{ off: !health.stt_ready }" />
-          </div>
           <div class="record-time" :class="{ live: recorder.isRecording.value }">
             <span><i /> {{ recorder.isRecording.value ? 'REC' : 'READY' }}</span>
             <strong>{{ recorder.elapsedLabel.value }}</strong>
@@ -331,35 +412,50 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div v-if="activeSession" class="content-grid" :class="{ 'content-grid--coach-closed': !coachOpen }">
+      <div v-if="activeSession" class="content-grid">
         <section class="lesson-column">
           <div class="lesson-heading">
             <h1>{{ activeSession.title }}</h1>
-            <p class="lesson-date"><CalendarDays :size="14" /> {{ sessionDate }}</p>
+            <div class="lesson-heading-meta">
+              <p class="lesson-date"><CalendarDays :size="14" /> {{ sessionDate }}</p>
+              <div class="reference-controls">
+                <button
+                  class="reference-button"
+                  :title="activeSession.reference_name ? 'PDF 참고 자료 교체' : 'PDF 참고 자료 추가'"
+                  :disabled="uploadingReference || deletingReference || recorder.isRecording.value || recorder.isProcessing.value || isFinalizing"
+                  @click="referenceInput?.click()"
+                >
+                  <FileText :size="14" />
+                  {{ uploadingReference ? '처리 중…' : (activeSession.reference_name || 'PDF 자료 추가') }}
+                </button>
+                <button
+                  v-if="activeSession.reference_name"
+                  class="reference-delete-button"
+                  title="PDF 참고 자료 삭제"
+                  aria-label="PDF 참고 자료 삭제"
+                  :disabled="uploadingReference || deletingReference || recorder.isRecording.value || recorder.isProcessing.value || isFinalizing"
+                  @click="deleteActiveReference"
+                >
+                  <Trash2 :size="14" />
+                </button>
+              </div>
+              <input ref="referenceInput" class="reference-file-input" type="file" accept="application/pdf,.pdf" @change="uploadActiveReference" />
+            </div>
           </div>
 
           <TranscriptPanel
             :summary-cards="activeSession.material?.summary_cards || []"
             :summary-notes="activeSession.material?.summary_notes || []"
+            :recording="recorder.isRecording.value"
+            :processing="recorder.isProcessing.value"
             :append-note="appendSummaryNote"
+            :update-summaries="updateSummaries"
           />
         </section>
 
-        <button
-          v-if="!coachOpen"
-          class="coach-reopen"
-          aria-label="AI 도우미 펼치기"
-          title="AI 도우미 펼치기"
-          @click="coachOpen = true"
-        >
-          <PanelRightOpen :size="17" />
-        </button>
-
         <CoachPanel
-          v-show="coachOpen"
           :session="activeSession"
           :llm-ready="health.llm_ready"
-          @toggle="coachOpen = false"
           @updated="replaceSession"
           @error="showToast"
         />
@@ -375,7 +471,7 @@ onBeforeUnmount(() => {
         <template v-else>
           <span><Sparkles :size="34" /></span>
           <h1>아직 수업이 없어요</h1>
-          <p>새 학습을 시작하면 이곳에 수업 내용이 표시됩니다.</p>
+          <p>새 학습을 시작하면 이곳에 수업 요약이 표시됩니다.</p>
           <button @click="openCreateModal">새 학습 시작</button>
         </template>
       </div>
@@ -402,6 +498,15 @@ onBeforeUnmount(() => {
           <label>
             <span>수업 제목</span>
             <input v-model="newTitle" maxlength="100" autofocus placeholder="예: Spring Security 기초" />
+          </label>
+          <label class="pdf-upload-label">
+            <span>참고 자료 PDF <small>선택 사항</small></span>
+            <input class="pdf-file-input" type="file" accept="application/pdf,.pdf" @change="chooseNewReference" />
+            <span class="pdf-upload-control">
+              <FileText :size="17" />
+              <strong>{{ newReferenceFile?.name || 'PDF 파일 선택' }}</strong>
+            </span>
+            <small>전문 용어 보정과 요약에만 참고하며, 없어도 기존 방식으로 녹음됩니다.</small>
           </label>
           <button class="modal-submit" type="submit" :disabled="!newTitle.trim()">
             학습 공간 만들기

@@ -1,11 +1,11 @@
-# Re:Class — 완전 로컬 AI 학습 에이전트
+# SKAIT — 완전 로컬 AI 학습 도우미
 
 빠르게 진행되는 Zoom·YouTube 수업을 실시간 전사하고, 핵심 노트와 복습 질문을 만들며, 수업 근거와 LLM 사전학습 지식을 구분해 답하는 개인용 학습 웹사이트입니다. FastAPI, Vue 3, MLX Whisper, Ollama를 사용하며 배포 서버나 유료 API 없이 Apple Silicon Mac 한 대에서 실행됩니다.
 
 ## 현재 구현 범위
 
 - Zoom 브라우저 탭, YouTube 브라우저 탭 또는 마이크 음성을 최대 30초·5초 무음 단위로 STT하고 원시 전사는 내부에만 저장
-- 직전 60~90초 정제 문맥을 참고해 Qwen3가 `temperature=0`으로 현재 STT를 보수적으로 교정
+- 선택형 PDF 참고 자료와 직전 60~90초 정제 문맥을 참고해 Qwen3가 `temperature=0`으로 현재 STT를 보수적으로 교정
 - 정제에 성공한 Clean Transcript만 30초 용어·중요 개념 탐지와 2분 요약 카드에 사용
 - 의미 없는 구간은 건너뛰고, 한 배치에 최대 2개 Topic만 생성하며 최근 Topic과 유사한 중복 요약 제거
 - 요약 생성 시각을 한국 표준시로 표시하고, LLM과 분리된 개인 필기를 좌우 말풍선으로 함께 저장
@@ -49,46 +49,31 @@ YouTube URL은 영상 탭을 여는 링크로만 사용합니다. 백엔드는 U
 ### 1. 저장소 받기
 
 ```bash
-git clone git@github.com:ymj9608/study-agent.git
+git clone git@github.com:ymj9608/study-agent.git zoom_study_agent
 cd zoom_study_agent
 ```
 
 아직 원격 저장소를 만들기 전이라면 이 폴더 자체가 Git 루트가 되게 구성해야 합니다. 상위 홈 폴더를 Git 저장소로 사용하지 마세요.
 
-### 2. 필수 프로그램 설치
+### 2. 한 번에 자동 설정
 
-[Homebrew](https://brew.sh/)와 [Chrome](https://www.google.com/chrome/)을 준비한 뒤 실행합니다.
-
-```bash
-brew install python@3.12 ffmpeg ollama node
-brew services start ollama
-ollama pull qwen3:8b
-```
-
-### 3. 백엔드와 로컬 모델 설치
+[Homebrew](https://brew.sh/)와 [Chrome](https://www.google.com/chrome/)을 준비한 뒤 프로젝트 루트에서 한 번만 실행합니다.
 
 ```bash
-"$(brew --prefix python@3.12)/bin/python3.12" -m venv backend/.venv
-backend/.venv/bin/pip install -r backend/requirements-local-apple.txt
-cp backend/.env.example backend/.env
-backend/.venv/bin/hf download mlx-community/whisper-large-v3-turbo
+python setting.py
 ```
 
-공개 Whisper 체크포인트에는 Hugging Face 토큰이 필요하지 않습니다. `backend/.env`의 `HF_TOKEN`은 비워 두어도 됩니다.
+`python` 명령이 없는 macOS에서는 `python3 setting.py`로 실행해도 됩니다. 이 스크립트는 Python 3.12, ffmpeg, Node.js, Ollama를 확인하고, 필요한 Homebrew 패키지 설치, `backend/.venv` 생성, 백엔드·프론트엔드 패키지 설치, `.env` 생성, Whisper·Qwen 모델 다운로드까지 처리합니다. 기존 `.env`와 개인 수업 DB는 덮어쓰지 않으며, 다시 실행하면 이미 설치된 항목을 재사용합니다.
 
-### 4. 프론트엔드 설치
+모델 다운로드를 나중에 하려면 `python setting.py --skip-models`, 가상환경을 완전히 다시 만들려면 `python setting.py --reset-venv`를 사용합니다. 공개 Whisper 체크포인트에는 Hugging Face 토큰이 필요하지 않습니다.
+
+### 3. 실행
 
 ```bash
-npm --prefix frontend ci
+python3 open.py
 ```
 
-### 5. 실행
-
-```bash
-./start-local.sh
-```
-
-Chrome에서 `http://127.0.0.1:5173`을 엽니다. API 상태는 `http://127.0.0.1:8000/api/health`, API 문서는 `http://127.0.0.1:8000/docs`입니다. 종료할 때는 실행한 터미널에서 `Ctrl+C`를 누릅니다.
+`open.py`가 Ollama, 백엔드, 프론트엔드 서버를 순서대로 실행하고 준비가 끝나면 `http://127.0.0.1:5173`을 Google Chrome으로 엽니다. 가상환경을 별도로 활성화할 필요가 없습니다. 모든 서버를 종료하려면 실행한 터미널에서 `Ctrl+C`를 누릅니다. API 상태는 `http://127.0.0.1:8000/api/health`, API 문서는 `http://127.0.0.1:8000/docs`입니다.
 
 정상 상태에는 다음 값이 표시됩니다.
 
@@ -121,21 +106,21 @@ Mac에서는 반드시 데스크톱 Chrome을 사용하세요. Safari와 Firefox
 1. `새 학습 시작` → `YouTube`를 선택하고 한국어 강의 URL을 입력합니다.
 2. `학습 공간 만들기` 후 `강의 열기`를 눌러 새 탭을 엽니다.
 3. 광고를 넘기고 강의 시작 지점에서 영상을 일시정지합니다.
-4. Re:Class 탭으로 돌아와 `YouTube 듣기`를 누릅니다.
+4. SKAIT 탭으로 돌아와 `학습 시작`을 누릅니다.
 5. Chrome 공유 창에서 해당 YouTube **탭**을 선택하고 **탭 오디오 공유**를 켭니다.
 6. YouTube 탭에서 영상을 재생합니다. 원시 STT는 최대 30초 또는 5초 무음 단위로 내부 저장된 뒤 Qwen3로 정제됩니다. 정제된 전사에서 용어·중요 개념은 30초마다 갱신되고, 화면에는 2분마다 의미 있는 요약 카드가 추가됩니다.
-7. Re:Class의 `변환 종료` 또는 Chrome 공유 막대의 `공유 중지`를 누릅니다.
+7. SKAIT의 `학습 종료` 또는 Chrome 공유 막대의 `공유 중지`를 누릅니다.
 8. 마지막 구간 업로드와 최종 요약이 끝난 뒤 챗봇 질문을 시험합니다.
 9. 서버를 `Ctrl+C`로 끄고 다시 실행해 같은 세션이 남아 있는지 확인합니다.
 
 짧은 공개 테스트 후보는 생활코딩의 [JavaScript 함수의 활용(4분 35초)](https://youtu.be/WsPJ8FsoMcU)입니다. 강의 목차와 예제는 [생활코딩 동영상·예제 링크 모음](https://wikibook.github.io/html-css-js/js.html)에서 함께 확인할 수 있습니다.
 
-공유 권한창에서 탭 선택은 브라우저 보안상 매번 사용자가 직접 해야 합니다. 타임스탬프는 YouTube 영상의 절대 재생 시간이 아니라 Re:Class가 수집을 시작한 뒤의 경과 시간입니다. 영상 저작권과 강의자의 녹음·활용 동의를 확인하고 개인 학습 범위에서 사용하세요.
+공유 권한창에서 탭 선택은 브라우저 보안상 매번 사용자가 직접 해야 합니다. 타임스탬프는 YouTube 영상의 절대 재생 시간이 아니라 SKAIT가 수집을 시작한 뒤의 경과 시간입니다. 영상 저작권과 강의자의 녹음·활용 동의를 확인하고 개인 학습 범위에서 사용하세요.
 
 ### 3. Zoom 실시간 테스트
 
 1. Chrome의 Zoom Web에서 수업에 참여합니다.
-2. Re:Class의 Zoom 세션에서 `Zoom 탭 오디오`를 선택하고 `수업 녹음`을 누릅니다.
+2. SKAIT의 Zoom 세션에서 `학습 시작`을 누릅니다.
 3. 공유 창에서 Zoom 탭과 `탭 오디오 공유`를 선택합니다.
 4. 데스크톱 Zoom 앱을 사용한다면 마이크 모드로 스피커 음성을 받거나 별도 가상 오디오 장치가 필요합니다.
 
@@ -169,6 +154,7 @@ LEARNING_ITEM_BATCH_SECONDS=30
 SUMMARY_BATCH_SECONDS=120
 DATABASE_FILE=data/reclass.sqlite3
 DATA_FILE=data/sessions.json
+MAX_PDF_MB=20
 ```
 
 메모리가 부족하면 `OLLAMA_MODEL=qwen3.5:4b`로 바꾸고 먼저 `ollama pull qwen3.5:4b`를 실행하세요. `LLM_PROVIDER=local`은 생성형 모델 없이 추출식 요약·수업 근거 답변만 사용합니다.
@@ -221,8 +207,9 @@ npm run build
 | `GET` | `/api/health` | STT·LLM 준비 상태 |
 | `GET/POST` | `/api/sessions` | 저장된 세션 조회·생성 |
 | `POST` | `/api/sessions/{id}/audio` | 원시 STT 내부 저장 + Qwen 정제 + Clean Transcript의 30초 학습 항목 탐지·닫힌 2분 요약 |
-| `POST` | `/api/sessions/{id}/transcript` | 텍스트 수업 내용 추가 |
-| `POST` | `/api/sessions/{id}/summary` | AI 노트 재생성 |
+| `POST/PATCH` | `/api/sessions/{id}/transcript` | 텍스트 수업 내용 추가·일괄 수정 |
+| `POST/DELETE` | `/api/sessions/{id}/reference` | 선택형 PDF 참고 자료 연결·삭제 |
+| `POST/PATCH` | `/api/sessions/{id}/summary` | AI 노트 재생성·요약 일괄 수정 |
 | `POST` | `/api/sessions/{id}/summary-notes` | 개인 필기 추가 |
 | `POST` | `/api/sessions/{id}/chat` | 수업 근거 + 사전학습 보충 답변 |
 

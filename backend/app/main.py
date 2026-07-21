@@ -15,13 +15,16 @@ from .schemas import (
     SessionUpdate,
     StatusUpdate,
     StudyMaterial,
+    SummaryBatchUpdate,
     SummaryCard,
     SummaryNote,
     SummaryNoteCreate,
+    TranscriptBatchUpdate,
     TranscriptCreate,
     TranscriptSegment,
     TranscriptUpdate,
 )
+from .services.pdf import extract_pdf_text
 from .services.stt import SpeechToText, build_stt
 from .services.study import (
     StudyAssistant,
@@ -63,7 +66,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Zoom·YouTube 수업 음성을 기록하고 요약·질의응답을 제공하는 로컬 학습 에이전트 API",
+    description="Zoom·YouTube 수업 음성을 기록하고 요약·질의응답을 제공하는 로컬 AI 학습 도우미 API",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -113,6 +116,11 @@ def refresh_material_digest(session: LectureSession) -> None:
     ][-5:]
 
 
+async def regenerate_material(session: LectureSession) -> None:
+    """이전 호출부와 호환되도록 전체 배치 요약·학습 항목을 다시 만듭니다."""
+    await rebuild_study_material(session)
+
+
 async def refine_transcript_segment(
     session: LectureSession,
     segment: TranscriptSegment,
@@ -137,7 +145,7 @@ async def refine_transcript_segment(
     )
     cleaned = await assistant_or_503().refine_transcript(
         previous_context,
-        segment.raw_text or segment.text,
+        segment.text,
     )
     if not cleaned:
         return False
@@ -237,11 +245,19 @@ async def summarize_window(
         for card in previous_cards[-5:]
         for topic in card.topics
     ]
-    result = await assistant_or_503().summarize_batch(
-        segments,
-        previous_summary,
-        recent_topics,
-    )
+    if session.reference_text:
+        result = await assistant_or_503().summarize_batch(
+            segments,
+            previous_summary,
+            recent_topics,
+            session.reference_text,
+        )
+    else:
+        result = await assistant_or_503().summarize_batch(
+            segments,
+            previous_summary,
+            recent_topics,
+        )
     result = remove_duplicate_topics(result, previous_cards)
     if not result.has_meaningful_content or not result.topics:
         return
@@ -418,6 +434,24 @@ async def append_transcript(session_id: str, payload: TranscriptCreate) -> Lectu
     return repository().save(session)
 
 
+@app.patch("/api/sessions/{session_id}/transcript", response_model=LectureSession)
+async def update_transcripts(
+    session_id: str,
+    payload: TranscriptBatchUpdate,
+) -> LectureSession:
+    """수업 내용을 한 번에 저장하고, AI 노트 갱신은 별도 요청으로 처리합니다."""
+    session = get_session_or_404(session_id)
+    segments_by_id = {segment.id: segment for segment in session.segments}
+    missing_ids = [item.id for item in payload.updates if item.id not in segments_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail="수정할 수업 내용을 찾을 수 없습니다.")
+
+    for item in payload.updates:
+        segments_by_id[item.id].text = item.text
+        segments_by_id[item.id].is_refined = True
+    return repository().save(session)
+
+
 @app.patch(
     "/api/sessions/{session_id}/transcript/{segment_id}",
     response_model=LectureSession,
@@ -434,6 +468,44 @@ async def update_transcript(
     segment.text = payload.text
     segment.is_refined = True
     await rebuild_study_material(session)
+    return repository().save(session)
+
+
+@app.post("/api/sessions/{session_id}/reference", response_model=LectureSession)
+async def upload_reference_pdf(
+    session_id: str,
+    document: UploadFile = File(...),
+) -> LectureSession:
+    session = get_session_or_404(session_id)
+    filename = (document.filename or "lecture-reference.pdf").replace("\\", "/").rsplit("/", 1)[-1]
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=415, detail="PDF 파일만 업로드할 수 있습니다.")
+    raw = await document.read(settings.max_pdf_mb * 1024 * 1024 + 1)
+    if not raw:
+        raise HTTPException(status_code=400, detail="PDF 파일이 비어 있습니다.")
+    if len(raw) > settings.max_pdf_mb * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"PDF는 {settings.max_pdf_mb}MB 이하만 업로드할 수 있습니다.",
+        )
+    try:
+        reference_text = extract_pdf_text(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    session.reference_name = filename[:255]
+    session.reference_text = reference_text
+    if session.segments:
+        await regenerate_material(session)
+    return repository().save(session)
+
+
+@app.delete("/api/sessions/{session_id}/reference", response_model=LectureSession)
+async def delete_reference_pdf(session_id: str) -> LectureSession:
+    """연결된 PDF를 즉시 제거하고, AI 노트 갱신은 별도 요청으로 처리합니다."""
+    session = get_session_or_404(session_id)
+    session.reference_name = None
+    session.reference_text = None
     return repository().save(session)
 
 
@@ -472,10 +544,20 @@ async def transcribe_audio(
         await process_summary_batches(session, chunk_end_seconds)
         await process_learning_item_batches(session, chunk_end_seconds)
         return repository().save(session)
+    corrected_text = result.text
+    if session.reference_text:
+        recent_context = "\n".join(
+            item.text for item in session.segments[-3:] if item.is_refined
+        )
+        corrected_text = await assistant_or_503().correct_transcript(
+            result.text,
+            session.reference_text,
+            recent_context,
+        )
     segment = TranscriptSegment(
         start_seconds=start_seconds,
         speaker="강사" if session.source_type == "youtube" else "교수님",
-        text=result.text,
+        text=corrected_text,
         confidence=result.confidence,
         raw_text=result.text,
         is_refined=False,
@@ -497,6 +579,29 @@ async def transcribe_audio(
 async def refresh_summary(session_id: str) -> LectureSession:
     session = get_session_or_404(session_id)
     await rebuild_study_material(session)
+    return repository().save(session)
+
+
+@app.patch("/api/sessions/{session_id}/summary", response_model=LectureSession)
+async def update_summaries(
+    session_id: str,
+    payload: SummaryBatchUpdate,
+) -> LectureSession:
+    """AI 요약 카드와 사용자가 추가한 요약을 재생성 없이 일괄 수정합니다."""
+    session = get_session_or_404(session_id)
+    cards_by_id = {card.id: card for card in session.material.summary_cards}
+    notes_by_id = {note.id: note for note in session.material.summary_notes}
+    missing_card_ids = [item.id for item in payload.cards if item.id not in cards_by_id]
+    missing_note_ids = [item.id for item in payload.notes if item.id not in notes_by_id]
+    if missing_card_ids or missing_note_ids:
+        raise HTTPException(status_code=404, detail="수정할 요약 내용을 찾을 수 없습니다.")
+
+    for item in payload.cards:
+        cards_by_id[item.id].topics = [topic.model_copy(deep=True) for topic in item.topics]
+    for item in payload.notes:
+        notes_by_id[item.id].text = item.text
+
+    refresh_material_digest(session)
     return repository().save(session)
 
 

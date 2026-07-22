@@ -48,6 +48,30 @@ class StudyServiceTests(unittest.TestCase):
     def test_timestamp(self) -> None:
         self.assertEqual(format_timestamp(125), "02:05")
 
+    def test_english_term_title_uses_only_its_canonical_spelling(self) -> None:
+        english_term = LearningItem(
+            type="term",
+            title="임베딩(Embedding)",
+            explanation="문장을 숫자 벡터로 표현하는 방식입니다.",
+        )
+        korean_term = LearningItem(
+            type="term",
+            title="상관계수",
+            explanation="두 변수가 함께 움직이는 정도를 나타냅니다.",
+        )
+        concept = LearningItem(
+            type="concept",
+            title="화살표 함수(Arrow Function)는 자신만의 this를 만들지 않는다",
+            explanation="정의된 바깥 범위의 this를 사용합니다.",
+        )
+
+        self.assertEqual(english_term.title, "Embedding")
+        self.assertEqual(korean_term.title, "상관계수")
+        self.assertEqual(
+            concept.title,
+            "화살표 함수(Arrow Function)는 자신만의 this를 만들지 않는다",
+        )
+
     def test_transcript_refinement_prompt_uses_clean_context(self) -> None:
         messages = build_transcript_refinement_messages(
             "정답 레이블은 `y_train`에 저장했습니다.",
@@ -385,7 +409,8 @@ class StudyServiceTests(unittest.TestCase):
         self.assertGreaterEqual(sum(len(item.text) for item in segments), 300)
         material = asyncio.run(assistant.summarize(segments))
         self.assertIn("화살표 함수", material.summary)
-        self.assertEqual(material.keywords, ["화살표 함수(Arrow Function)"])
+        self.assertEqual(material.keywords, ["Arrow Function"])
+        self.assertEqual(material.learning_items[0].title, "Arrow Function")
         self.assertIn("자바스크립트", material.keyword_explanations[material.keywords[0]])
         self.assertEqual([item.type for item in material.learning_items], ["term", "concept"])
         self.assertEqual(captured["max_tokens"], 900)
@@ -473,6 +498,7 @@ class StudyServiceTests(unittest.TestCase):
         self.assertIn("Select zero to three total items", messages[0]["content"])
         self.assertIn("term:", messages[0]["content"])
         self.assertIn("concept:", messages[0]["content"])
+        self.assertIn("only its canonical English spelling", messages[0]["content"])
         self.assertTrue(
             any(
                 message["role"] == "assistant"
@@ -483,7 +509,7 @@ class StudyServiceTests(unittest.TestCase):
         self.assertTrue(
             any(
                 message["role"] == "assistant"
-                and '"이상치(Outlier)"' in message["content"]
+                and '"Outlier"' in message["content"]
                 and '"아울라(Outlier)"' not in message["content"]
                 for message in messages
             )

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import re
 from typing import Literal
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -7,6 +8,28 @@ from pydantic import BaseModel, Field, field_serializer, model_validator
 
 
 EMPTY_SUMMARY_TEXT = "아직 정리할 수업 내용이 없습니다. 녹음을 시작하거나 텍스트를 추가해 주세요."
+KOREAN_TEXT_PATTERN = re.compile(r"[가-힣]")
+LATIN_TEXT_PATTERN = re.compile(r"[A-Za-z]")
+PARENTHESIZED_TERM_PATTERN = re.compile(
+    r"^\s*([^()]*)\(\s*([^()]*)\s*\)\s*$"
+)
+
+
+def canonicalize_term_title(title: str) -> str:
+    """한글 음역과 병기된 영어 기술 용어는 영어 원어만 유지합니다."""
+    normalized = title.strip()
+    match = PARENTHESIZED_TERM_PATTERN.fullmatch(normalized)
+    if not match:
+        return normalized
+
+    outer, parenthesized = (part.strip() for part in match.groups())
+    if (
+        KOREAN_TEXT_PATTERN.search(outer)
+        and LATIN_TEXT_PATTERN.search(parenthesized)
+        and not KOREAN_TEXT_PATTERN.search(parenthesized)
+    ):
+        return parenthesized
+    return normalized
 
 
 def utc_now() -> datetime:
@@ -35,6 +58,18 @@ class LearningItem(BaseModel):
     type: Literal["term", "concept"]
     title: str = Field(min_length=1, max_length=180)
     explanation: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_item(self) -> "LearningItem":
+        self.title = (
+            canonicalize_term_title(self.title)
+            if self.type == "term"
+            else self.title.strip()
+        )
+        self.explanation = self.explanation.strip()
+        if not self.title or not self.explanation:
+            raise ValueError("학습 항목의 제목과 설명은 비어 있을 수 없습니다.")
+        return self
 
 
 class SummaryTopic(BaseModel):
@@ -194,7 +229,7 @@ class LectureSession(BaseModel):
         self,
         segments: list[TranscriptSegment],
     ) -> list[dict]:
-        """API와 JSON에는 Qwen 정제를 통과한 전사만 노출합니다."""
+        """API와 JSON에는 생성 모델 정제를 통과한 전사만 노출합니다."""
         return [
             segment.model_dump(mode="json")
             for segment in segments

@@ -1,11 +1,22 @@
 import asyncio
+from io import BytesIO
 import unittest
 from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 
-from app.main import delete_reference_pdf, update_transcripts
-from app.schemas import LectureSession, TranscriptBatchUpdate, TranscriptSegment
+from app.main import (
+    delete_reference_document,
+    delete_reference_pdf,
+    update_transcripts,
+    upload_reference_pdfs,
+)
+from app.schemas import (
+    LectureSession,
+    ReferenceDocument,
+    TranscriptBatchUpdate,
+    TranscriptSegment,
+)
 
 
 class RecordingRepository:
@@ -89,6 +100,59 @@ class ReferenceDeleteApiTests(unittest.TestCase):
         self.assertIsNone(repository.saved.reference_name)
         self.assertIsNone(repository.saved.reference_text)
         regenerate.assert_not_called()
+
+    def test_deletes_only_the_selected_reference(self) -> None:
+        session = LectureSession(
+            title="PDF 개별 삭제 테스트",
+            references=[
+                ReferenceDocument(id="reference-1", name="one.pdf", text="첫 번째 자료"),
+                ReferenceDocument(id="reference-2", name="two.pdf", text="두 번째 자료"),
+            ],
+        )
+        repository = RecordingRepository()
+
+        with (
+            patch("app.main.get_session_or_404", return_value=session),
+            patch("app.main.repository", return_value=repository),
+        ):
+            result = asyncio.run(
+                delete_reference_document(session.id, "reference-1")
+            )
+
+        self.assertEqual(
+            [reference.name for reference in result.references],
+            ["two.pdf"],
+        )
+        self.assertNotIn("첫 번째", result.reference_text)
+        self.assertIn("두 번째", result.reference_text)
+
+
+class ReferenceUploadApiTests(unittest.TestCase):
+    def test_uploads_multiple_references_in_one_request(self) -> None:
+        session = LectureSession(title="PDF 복수 업로드 테스트")
+        repository = RecordingRepository()
+        documents = [
+            UploadFile(file=BytesIO(b"first"), filename="one.pdf"),
+            UploadFile(file=BytesIO(b"second"), filename="two.pdf"),
+        ]
+
+        with (
+            patch("app.main.get_session_or_404", return_value=session),
+            patch("app.main.repository", return_value=repository),
+            patch(
+                "app.main.extract_pdf_text",
+                side_effect=["첫 번째 PDF 본문", "두 번째 PDF 본문"],
+            ),
+        ):
+            result = asyncio.run(upload_reference_pdfs(session.id, documents))
+
+        self.assertEqual(
+            [reference.name for reference in result.references],
+            ["one.pdf", "two.pdf"],
+        )
+        self.assertIn("첫 번째 PDF 본문", result.reference_text)
+        self.assertIn("두 번째 PDF 본문", result.reference_text)
+        self.assertIsNotNone(repository.saved)
 
 
 if __name__ == "__main__":

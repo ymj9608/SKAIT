@@ -6,7 +6,9 @@ from app.config import Settings
 from app.schemas import (
     BatchSummaryResult,
     LearningItem,
+    StudyMaterial,
     SummaryCard,
+    SummaryNote,
     SummaryTopic,
     TranscriptSegment,
 )
@@ -24,8 +26,11 @@ from app.services.study import (
     build_summary_context,
     build_study_assistant,
     extractive_summary,
+    fallback_batch_summary,
+    filter_instructional_text,
     format_timestamp,
     merge_learning_items,
+    optimize_stored_material,
     rank_sources,
     refined_transcript_from_payload,
     remove_duplicate_topics,
@@ -144,10 +149,14 @@ class StudyServiceTests(unittest.TestCase):
         )
         self.assertIn("only factual evidence", messages[0]["content"])
         self.assertIn("has_meaningful_content=false", messages[0]["content"])
+        self.assertIn("casual conversation", messages[0]["content"])
+        self.assertIn("off-topic tangents", messages[0]["content"])
         self.assertIn("at most two", messages[0]["content"])
+        self.assertIn("copy one or more exact sentences or clauses", messages[0]["content"])
         self.assertIn("직전에는 REST API", messages[-1]["content"])
         self.assertIn('"REST API 요청"', messages[-1]["content"])
         self.assertIn(self.segments[0].text, messages[-1]["content"])
+        self.assertNotIn("<PDF_RAG_CONTEXT>", messages[-1]["content"])
         self.assertTrue(
             any(
                 message["role"] == "assistant"
@@ -155,6 +164,85 @@ class StudyServiceTests(unittest.TestCase):
                 for message in messages
             )
         )
+
+    def test_fallback_batch_summary_omits_casual_conversation(self) -> None:
+        result = fallback_batch_summary(
+            [
+                TranscriptSegment(
+                    start_seconds=0,
+                    text="어제 야구 보셨어요? 정말 재미있더라고요.",
+                ),
+                TranscriptSegment(
+                    start_seconds=30,
+                    text="점심은 뭐 드셨어요? 요즘 앞에 새로 생긴 식당이 괜찮대요.",
+                ),
+            ]
+        )
+
+        self.assertFalse(result.has_meaningful_content)
+        self.assertEqual(result.topics, [])
+
+    def test_instructional_filter_removes_orientation_but_keeps_lesson_facts(self) -> None:
+        filtered = filter_instructional_text(
+            "음성이 안 들리면 매니저님에게 알려주세요. "
+            "실전 수준까지 끌어올리고 동료와 협업하는 것이 중요합니다. "
+            "Pydantic 모델은 요청 필드와 타입을 검증합니다."
+        )
+        self.assertNotIn("매니저", filtered)
+        self.assertNotIn("협업", filtered)
+        self.assertIn("Pydantic", filtered)
+
+    def test_fallback_batch_summary_omits_course_orientation(self) -> None:
+        result = fallback_batch_summary(
+            [
+                TranscriptSegment(
+                    text="이 과정에서는 실전 수준까지 끌어올리는 것이 중요합니다."
+                ),
+                TranscriptSegment(
+                    text="동료들과 의사소통하고 협업하는 능력이 필요합니다."
+                ),
+                TranscriptSegment(
+                    text="도움이 필요하면 매니저님에게 알려주세요."
+                ),
+            ]
+        )
+        self.assertFalse(result.has_meaningful_content)
+
+    def test_existing_orientation_cards_are_removed_without_touching_notes(self) -> None:
+        orientation_segment = TranscriptSegment(
+            id="orientation",
+            start_seconds=0,
+            text="실전 수준까지 성장하고 동료들과 협업하는 것이 중요합니다.",
+        )
+        material = StudyMaterial(
+            summary="실습 운영 안내입니다.",
+            summary_cards=[
+                SummaryCard(
+                    start_seconds=0,
+                    end_seconds=120,
+                    source_segment_ids=[orientation_segment.id],
+                    topics=[
+                        SummaryTopic(
+                            title="실습 운영",
+                            summary="실습 진행 방식과 협업을 안내합니다.",
+                            key_points=["협업이 중요합니다."],
+                        )
+                    ],
+                )
+            ],
+            summary_notes=[SummaryNote(text="사용자가 작성한 메모")],
+            learning_items=[
+                LearningItem(
+                    type="concept",
+                    title="협업이 중요하다",
+                    explanation="동료와 함께 일해야 한다는 뜻입니다.",
+                )
+            ],
+        )
+        optimized = optimize_stored_material(material, [orientation_segment])
+        self.assertEqual(optimized.summary_cards, [])
+        self.assertEqual(optimized.learning_items, [])
+        self.assertEqual(optimized.summary_notes[0].text, "사용자가 작성한 메모")
 
     def test_batch_payload_omits_meaningless_content_and_limits_topics(self) -> None:
         meaningless = batch_summary_from_payload(
@@ -182,6 +270,71 @@ class StudyServiceTests(unittest.TestCase):
         )
         self.assertTrue(meaningful.has_meaningful_content)
         self.assertEqual(len(meaningful.topics), 2)
+
+    def test_batch_payload_requires_exact_evidence_and_removes_ungrounded_points(self) -> None:
+        source = (
+            "Pydantic 모델은 요청 필드와 타입을 검증합니다. "
+            "검증에 실패하면 경로 함수 실행 전에 오류를 반환합니다."
+        )
+        result = batch_summary_from_payload(
+            {
+                "has_meaningful_content": True,
+                "topics": [
+                    {
+                        "title": "Pydantic 요청 검증",
+                        "summary": "Pydantic 모델은 요청 필드와 타입을 검증합니다.",
+                        "key_points": [
+                            "검증 실패는 경로 함수 실행 전에 오류로 처리됩니다.",
+                            "평가 기준은 Biz 가치와 협업 능력입니다.",
+                        ],
+                        "evidence": "Pydantic 모델은 요청 필드와 타입을 검증합니다.",
+                    }
+                ],
+            },
+            source,
+        )
+        self.assertTrue(result.has_meaningful_content)
+        self.assertEqual(
+            result.topics[0].key_points,
+            ["검증 실패는 경로 함수 실행 전에 오류로 처리됩니다."],
+        )
+
+        missing_evidence = batch_summary_from_payload(
+            {
+                "has_meaningful_content": True,
+                "topics": [
+                    {
+                        "title": "근거 없는 주제",
+                        "summary": "Pydantic 모델은 요청 필드를 검증합니다.",
+                        "key_points": [],
+                    }
+                ],
+            },
+            source,
+        )
+        self.assertFalse(missing_evidence.has_meaningful_content)
+
+    def test_batch_payload_rejects_an_unsupported_extra_summary_sentence(self) -> None:
+        source = "Pydantic 모델은 요청 필드와 타입을 검증합니다."
+        result = batch_summary_from_payload(
+            {
+                "has_meaningful_content": True,
+                "topics": [
+                    {
+                        "title": "Pydantic 요청 검증",
+                        "summary": (
+                            "Pydantic 모델은 요청 필드와 타입을 검증합니다. "
+                            "또한 NASA의 달 탐사 비행 계획을 자동으로 만듭니다."
+                        ),
+                        "key_points": [],
+                        "evidence": [source],
+                    }
+                ],
+            },
+            source,
+        )
+
+        self.assertFalse(result.has_meaningful_content)
 
     def test_duplicate_batch_topic_is_removed_after_model_response(self) -> None:
         previous = SummaryCard(
@@ -214,7 +367,8 @@ class StudyServiceTests(unittest.TestCase):
               "topics": [{
                 "title": "REST API 통신",
                 "summary": "클라이언트와 서버가 HTTP로 통신하는 방식입니다.",
-                "key_points": ["요청과 응답을 사용합니다."]
+                "key_points": ["요청과 응답을 사용합니다."],
+                "evidence": "REST API는 클라이언트와 서버가 HTTP로 소통하는 방식입니다."
               }],
               "learning_items": []
             }"""
@@ -231,6 +385,23 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(result.topics[0].title, "REST API 통신")
         self.assertEqual(captured["max_tokens"], 900)
         self.assertIn("직전 요약", captured["messages"][-1]["content"])
+
+    def test_batch_summary_falls_back_when_meaningful_model_output_lacks_evidence(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
+        assistant._chat = lambda messages, max_tokens=700: """{
+          "has_meaningful_content": true,
+          "topics": [{
+            "title": "REST API 통신",
+            "summary": "REST API의 통신 방식을 설명합니다.",
+            "key_points": []
+          }]
+        }"""
+
+        result = asyncio.run(assistant.summarize_batch(self.segments))
+
+        self.assertTrue(result.has_meaningful_content)
+        self.assertTrue(result.topics)
+        self.assertIn("REST API", result.topics[0].summary)
 
     def test_batch_summary_uses_pdf_only_as_optional_term_reference(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
@@ -249,9 +420,9 @@ class StudyServiceTests(unittest.TestCase):
         )
 
         prompt = captured["messages"][-1]["content"]
-        self.assertIn("<PDF_REFERENCE>", prompt)
+        self.assertIn("<PDF_RAG_CONTEXT>", prompt)
         self.assertIn("train set", prompt)
-        self.assertIn("not lecture evidence", captured["messages"][0]["content"])
+        self.assertIn("not\nlecture evidence", captured["messages"][0]["content"])
 
     def test_summary_contains_material(self) -> None:
         material = extractive_summary(self.segments)
@@ -280,6 +451,53 @@ class StudyServiceTests(unittest.TestCase):
         )
         context = build_reference_context(reference, "데이터셋을 학습용과 평가용으로 나눕니다.")
         self.assertIn("train set", context)
+
+    def test_reference_context_rejects_generic_overlap_and_keeps_domain_terms(self) -> None:
+        reference = "\n".join(
+            [
+                "[PDF 1페이지] 다양한 기법과 구조를 다음 연구에서 설명합니다.",
+                "[PDF 2페이지] 클라우드 컴퓨팅은 딥러닝 모델의 연산을 지원합니다.",
+                "[PDF 3페이지] 프롬프트 작성과 컨텍스트 관리 방법입니다.",
+            ]
+        )
+
+        context = build_reference_context(
+            reference,
+            "클라우드 컴퓨팅이 등장한 뒤 딥러닝 모델을 설명했습니다.",
+        )
+
+        self.assertIn("[PDF 2페이지]", context)
+        self.assertNotIn("[PDF 1페이지]", context)
+
+    def test_reference_context_is_optional_when_no_pdf_or_no_related_term(self) -> None:
+        self.assertEqual(build_reference_context(None, "딥러닝을 설명합니다."), "")
+        self.assertEqual(
+            build_reference_context(
+                "[PDF 1페이지] 벡터 데이터베이스와 임베딩 검색",
+                "오늘 점심은 무엇을 먹을까요?",
+            ),
+            "",
+        )
+
+    def test_reference_context_preserves_file_and_page_for_multiple_pdfs(self) -> None:
+        reference = "\n".join(
+            [
+                "[PDF 파일: embeddings.pdf]",
+                "[PDF 2페이지] 임베딩은 문장의 의미를 벡터로 표현합니다.",
+                "[PDF 파일: retrieval.pdf]",
+                "[PDF 7페이지] 벡터 데이터베이스는 유사한 임베딩을 검색합니다.",
+            ]
+        )
+
+        context = build_reference_context(
+            reference,
+            "문장의 의미를 임베딩 벡터로 표현한 뒤 벡터 데이터베이스에서 검색합니다.",
+        )
+
+        self.assertIn("[PDF 파일: embeddings.pdf]", context)
+        self.assertIn("[PDF 2페이지]", context)
+        self.assertIn("[PDF 파일: retrieval.pdf]", context)
+        self.assertIn("[PDF 7페이지]", context)
 
     def test_local_answer_is_marked_as_class_only(self) -> None:
         assistant = LocalStudyAssistant()
@@ -495,7 +713,8 @@ class StudyServiceTests(unittest.TestCase):
             ["REST API"],
         )
         self.assertEqual(messages[0]["role"], "system")
-        self.assertIn("Select zero to three total items", messages[0]["content"])
+        self.assertIn("Select zero or one total item", messages[0]["content"])
+        self.assertIn("Most chunks should return no item", messages[0]["content"])
         self.assertIn("term:", messages[0]["content"])
         self.assertIn("concept:", messages[0]["content"])
         self.assertIn("only its canonical English spelling", messages[0]["content"])
@@ -518,24 +737,27 @@ class StudyServiceTests(unittest.TestCase):
         self.assertIn("<CURRENT_CONTEXT>", messages[-1]["content"])
         self.assertIn('["REST API"]', messages[-1]["content"])
 
-    def test_detect_learning_items_returns_term_and_concept_in_korean(self) -> None:
+    def test_detect_learning_items_keeps_only_the_single_most_important_item(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
         assistant._chat = lambda messages, max_tokens=700: """{
           "items": [
             {
               "type": "term",
               "title": "Self-Attention",
-              "explanation": "각 토큰이 다른 토큰을 얼마나 참고할지 계산하는 방식입니다."
+              "explanation": "각 토큰이 다른 토큰을 얼마나 참고할지 계산하는 방식입니다.",
+              "evidence": "셀프 어텐션으로 입력 토큰 사이의 관계를 계산합니다."
             },
             {
               "type": "concept",
               "title": "Self-Attention은 입력 토큰 사이의 관계를 계산한다",
-              "explanation": "각 입력이 다른 입력과 맺는 관련성을 계산해 문맥을 반영합니다."
+              "explanation": "각 입력이 다른 입력과 맺는 관련성을 계산해 문맥을 반영합니다.",
+              "evidence": "셀프 어텐션으로 입력 토큰 사이의 관계를 계산합니다."
             },
             {
               "type": "term",
               "title": "Unknown",
-              "explanation": "English explanation only"
+              "explanation": "English explanation only",
+              "evidence": "셀프 어텐션으로 입력 토큰 사이의 관계를 계산합니다."
             }
           ]
         }"""
@@ -546,11 +768,10 @@ class StudyServiceTests(unittest.TestCase):
                 [],
             )
         )
-        self.assertEqual([item.type for item in detected], ["term", "concept"])
+        self.assertEqual([item.type for item in detected], ["term"])
         self.assertEqual(detected[0].title, "Self-Attention")
-        self.assertIn("관련성", detected[1].explanation)
 
-    def test_merge_learning_items_keeps_recent_twenty_and_syncs_legacy_terms(self) -> None:
+    def test_merge_learning_items_keeps_recent_ten_and_syncs_legacy_terms(self) -> None:
         material = extractive_summary(self.segments)
         material.learning_items = [
             LearningItem(type="term", title=f"기존용어{index}", explanation="기존 한국어 설명입니다.")
@@ -569,11 +790,37 @@ class StudyServiceTests(unittest.TestCase):
             ),
         ]
         merged = merge_learning_items(material, detected)
-        self.assertEqual(len(merged.learning_items), 20)
+        self.assertEqual(len(merged.learning_items), 10)
         self.assertEqual(merged.learning_items[-1].type, "concept")
         self.assertIn("REST API", merged.keywords)
         self.assertIn("HTTP", merged.keyword_explanations["REST API"])
-        self.assertLessEqual(len(merged.keywords), 8)
+        self.assertLessEqual(len(merged.keywords), 6)
+
+        trimmed_without_new_items = merge_learning_items(material, [])
+        self.assertEqual(len(trimmed_without_new_items.learning_items), 10)
+
+    def test_merge_learning_items_removes_parenthetical_spelling_duplicates(self) -> None:
+        material = StudyMaterial(
+            learning_items=[
+                LearningItem(
+                    type="term",
+                    title="임베딩(Embedding)",
+                    explanation="문장을 숫자 벡터로 표현하는 방식입니다.",
+                )
+            ]
+        )
+        merged = merge_learning_items(
+            material,
+            [
+                LearningItem(
+                    type="term",
+                    title="임베딩(Embedding)",
+                    explanation="의미를 비교할 수 있도록 문장을 숫자로 바꾼 표현입니다.",
+                )
+            ],
+        )
+        self.assertEqual(len(merged.learning_items), 1)
+        self.assertEqual(merged.learning_items[0].title, "Embedding")
 
     def test_recent_learning_context_uses_previous_ninety_seconds(self) -> None:
         segments = [

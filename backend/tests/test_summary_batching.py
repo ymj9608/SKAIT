@@ -175,6 +175,8 @@ class SummaryBatchingTests(unittest.TestCase):
             asyncio.run(main.process_summary_batches(session, 240))
             self.assertEqual(len(calls), 2)
             self.assertIn("첫 2분", calls[1]["previous_summary"])
+            self.assertIn("직전 발화 맥락", calls[1]["previous_summary"])
+            self.assertIn("첫 구간의 마지막 설명", calls[1]["previous_summary"])
             self.assertEqual(calls[1]["recent_topics"], ["첫 번째 주제"])
             self.assertEqual(len(session.material.summary_cards), 1)
             self.assertEqual(session.material.summary_processed_through_seconds, 240)

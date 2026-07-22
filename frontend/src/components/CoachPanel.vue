@@ -16,7 +16,8 @@ import {
 } from '@lucide/vue'
 import { api } from '../services/api'
 import { canonicalTermTitle } from '../utils/learningItems'
-import { sourcesWithSummaryCards } from '../utils/summaryEvidence'
+import { quizQuestionSnapshot } from '../utils/quizSnapshot'
+import { summaryEvidenceItems } from '../utils/summaryEvidence'
 
 const props = defineProps({
   session: { type: Object, default: null },
@@ -32,6 +33,7 @@ const messages = ref([])
 const panelWidth = ref(390)
 const resizingPanel = ref(false)
 const quizOpen = ref(false)
+const quizSnapshotItems = ref([])
 const quizIndex = ref(0)
 const quizSelected = ref('')
 const quizChecked = ref(false)
@@ -64,7 +66,8 @@ const termItems = computed(() => learningItems.value
   .filter((item) => item.type === 'term')
   .map((item) => ({ ...item, title: canonicalTermTitle(item.title) })))
 const conceptItems = computed(() => learningItems.value.filter((item) => item.type === 'concept'))
-const quizItems = computed(() => material.value.quiz_questions || [])
+const savedQuizItems = computed(() => material.value.quiz_questions || [])
+const quizItems = computed(() => quizSnapshotItems.value)
 const activeQuizItem = computed(() => quizItems.value[quizIndex.value] || null)
 const quizOptions = computed(() => activeQuizItem.value?.options || [])
 const correctQuizOption = computed(() => (
@@ -228,21 +231,25 @@ function resetLearningSplit() {
   saveLearningSplit()
 }
 
-function visibleSources(sources) {
-  return sourcesWithSummaryCards(material.value.summary_cards || [], sources || [])
+function visibleEvidence(sources) {
+  return summaryEvidenceItems(material.value.summary_cards || [], sources || [])
 }
 
 function selectSource(source) {
   emit('source-selected', source)
 }
 
-function resetChat() {
+function resetQuizState() {
   quizOpen.value = false
   quizNoticeOpen.value = false
+  quizSnapshotItems.value = []
   quizIndex.value = 0
   quizSelected.value = ''
   quizChecked.value = false
   quizAnswers.value = {}
+}
+
+function syncStoredMessages() {
   const storedMessages = (props.session?.chat_messages || []).map((message) => ({
     role: message.role,
     text: message.text,
@@ -263,12 +270,17 @@ function resetChat() {
 }
 
 watch(
-  [
-    () => props.session?.id,
-    () => props.session?.chat_messages?.length || 0,
-  ],
-  resetChat,
+  () => props.session?.id,
+  () => {
+    resetQuizState()
+    syncStoredMessages()
+  },
   { immediate: true },
+)
+
+watch(
+  () => props.session?.chat_messages?.length || 0,
+  syncStoredMessages,
 )
 
 watch(tab, (activeTab) => {
@@ -345,11 +357,12 @@ async function sendQuestion(prompt) {
   }
 }
 
-function openQuiz() {
-  if (!quizItems.value.length) {
+function openQuiz(items = savedQuizItems.value) {
+  if (!items.length) {
     quizNoticeOpen.value = true
     return
   }
+  quizSnapshotItems.value = quizQuestionSnapshot(items)
   loadQuizProgress()
   quizOpen.value = true
 }
@@ -372,6 +385,7 @@ async function generateQuiz() {
   }
   try {
     const session = await api.generateQuiz(sessionId)
+    const generatedItems = quizQuestionSnapshot(session.material?.quiz_questions || [])
     emit('updated', session)
     localStorage.removeItem(quizStorageKey(sessionId))
     if (props.session?.id === sessionId) {
@@ -380,7 +394,7 @@ async function generateQuiz() {
       quizChecked.value = false
       quizAnswers.value = {}
       await nextTick()
-      openQuiz()
+      openQuiz(generatedItems)
     }
   } catch (error) {
     if (
@@ -404,12 +418,14 @@ function closeQuiz() {
 }
 
 function showNextQuiz() {
+  if (!quizItems.value.length) return
   quizIndex.value = (quizIndex.value + 1) % quizItems.value.length
   restoreCurrentQuizAnswer()
   saveQuizProgress()
 }
 
 function showPreviousQuiz() {
+  if (!quizItems.value.length) return
   quizIndex.value = (quizIndex.value - 1 + quizItems.value.length) % quizItems.value.length
   restoreCurrentQuizAnswer()
   saveQuizProgress()
@@ -481,7 +497,7 @@ function submitQuiz() {
           <strong>QUIZ</strong>
           <p>퀴즈를 통해 배운 내용을 확인해보세요.</p>
           <div class="review-card-actions">
-            <button v-if="quizItems.length" type="button" @click="openQuiz">
+            <button v-if="savedQuizItems.length" type="button" @click="openQuiz()">
               퀴즈 풀기 <ChevronRight :size="15" />
             </button>
             <button
@@ -491,9 +507,9 @@ function submitQuiz() {
               @click="generateQuiz"
             >
               <LoaderCircle v-if="quizGenerating" class="spin" :size="13" />
-              <RotateCcw v-else-if="quizItems.length" :size="13" />
+              <RotateCcw v-else-if="savedQuizItems.length" :size="13" />
               <Sparkles v-else :size="13" />
-              {{ quizGenerating ? '생성 중…' : (quizItems.length ? '퀴즈 재생성' : '퀴즈 생성') }}
+              {{ quizGenerating ? '생성 중…' : (savedQuizItems.length ? '퀴즈 재생성' : '퀴즈 생성') }}
             </button>
           </div>
         </div>
@@ -612,17 +628,20 @@ function submitQuiz() {
             </section>
           </div>
           <p v-else>{{ message.text }}</p>
-          <div v-if="visibleSources(message.sources).length" class="source-list">
+          <div v-if="visibleEvidence(message.sources).length" class="source-list">
             <span class="source-label"><CheckCircle2 :size="13" /> 수업 근거</span>
             <button
-              v-for="source in visibleSources(message.sources)"
-              :key="source.segment_id"
+              v-for="evidence in visibleEvidence(message.sources)"
+              :key="evidence.cardId"
               type="button"
               class="source-chip"
               title="수업 요약에서 근거 보기"
-              @click="selectSource(source)"
+              @click="selectSource(evidence.source)"
             >
-              <span>{{ source.excerpt }}</span>
+              <span>
+                <strong>{{ evidence.title }}</strong>
+                <small v-if="evidence.preview">{{ evidence.preview }}</small>
+              </span>
             </button>
           </div>
         </div>

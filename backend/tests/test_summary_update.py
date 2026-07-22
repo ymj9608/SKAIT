@@ -95,6 +95,57 @@ class SummaryUpdateApiTests(unittest.TestCase):
         self.assertIsNotNone(result.material.summary_notes[-1].created_at)
         self.assertIsNotNone(repository.saved)
 
+    def test_deletes_generated_and_personal_summaries_together(self) -> None:
+        repository = RecordingRepository()
+        payload = SummaryBatchUpdate(
+            deleted_card_ids=["card-1"],
+            deleted_note_ids=["note-1"],
+        )
+
+        with (
+            patch("app.main.get_session_or_404", return_value=self.session),
+            patch("app.main.repository", return_value=repository),
+        ):
+            result = asyncio.run(update_summaries(self.session.id, payload))
+
+        self.assertEqual(result.material.summary_cards, [])
+        self.assertEqual(result.material.summary_notes, [])
+        self.assertEqual(
+            result.material.summary,
+            "아직 정리할 수업 내용이 없습니다. 녹음을 시작하거나 텍스트를 추가해 주세요.",
+        )
+        self.assertEqual(result.material.key_points, [])
+        self.assertIsNotNone(repository.saved)
+
+    def test_rejects_unknown_deleted_ids_before_changing_any_summary(self) -> None:
+        repository = RecordingRepository()
+        payload = SummaryBatchUpdate(
+            cards=[
+                {
+                    "id": "card-1",
+                    "topics": [
+                        {
+                            "title": "바뀌면 안 되는 주제",
+                            "summary": "바뀌면 안 되는 요약입니다.",
+                            "key_points": [],
+                        }
+                    ],
+                }
+            ],
+            deleted_note_ids=["missing-note"],
+        )
+
+        with (
+            patch("app.main.get_session_or_404", return_value=self.session),
+            patch("app.main.repository", return_value=repository),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                asyncio.run(update_summaries(self.session.id, payload))
+
+        self.assertEqual(context.exception.status_code, 404)
+        self.assertEqual(self.session.material.summary_cards[0].topics[0].title, "기존 주제")
+        self.assertIsNone(repository.saved)
+
     def test_rejects_unknown_ids_before_changing_any_summary(self) -> None:
         repository = RecordingRepository()
         payload = SummaryBatchUpdate(

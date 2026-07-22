@@ -15,5 +15,8 @@ test('shows only the English title when a term contains Korean and parenthesized
 test('preserves titles that do not contain a Korean and English pair', () => {
   assert.equal(canonicalTermTitle('REST API'), 'REST API')
   assert.equal(canonicalTermTitle('상관계수'), '상관계수')
-  assert.equal(canonicalTermTitle('API (Application Programming Interface)'), 'API (Application Programming Interface)')
+  assert.equal(
+    canonicalTermTitle('API (Application Programming Interface)'),
+    'API (Application Programming Interface)',
+  )
 })

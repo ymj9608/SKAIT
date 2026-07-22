@@ -39,15 +39,15 @@ const sidebarCollapsed = ref(false)
 const createModalOpen = ref(false)
 const newTitle = ref('새 수업')
 const newSourceType = ref('zoom')
-const newReferenceFile = ref(null)
+const newReferenceFiles = ref([])
 const referenceInput = ref(null)
 const transcriptPanel = ref(null)
 const uploadingReference = ref(false)
-const deletingReference = ref(false)
+const deletingReferenceId = ref('')
 const isFinalizing = ref(false)
 const toast = ref(null)
 let toastTimer = null
-let recordingSessionId = null
+const recordingSessionId = ref(null)
 let finalizationPromise = null
 
 function upsertSession(session) {
@@ -78,8 +78,10 @@ function focusSummarySource(source) {
 
 const recorder = useRecorder(
   async (blob, startSeconds, endSeconds) => {
-    if (!recordingSessionId) return
-    replaceSession(await api.uploadAudio(recordingSessionId, blob, startSeconds, endSeconds))
+    if (!recordingSessionId.value) return
+    updateSessionInBackground(
+      await api.uploadAudio(recordingSessionId.value, blob, startSeconds, endSeconds),
+    )
   },
   async (elapsedSeconds) => finalizeRecording(elapsedSeconds),
 )
@@ -102,6 +104,10 @@ const recordingActionLabel = computed(() => {
   return '학습 시작'
 })
 
+const activeSessionIsBeingRecorded = computed(() => (
+  Boolean(recordingSessionId.value && activeSession.value?.id === recordingSessionId.value)
+))
+
 async function loadApp() {
   loading.value = true
   loadFailed.value = false
@@ -119,30 +125,19 @@ async function loadApp() {
 }
 
 async function selectSession(id) {
-  if (recorder.isRecording.value || recorder.isProcessing.value || isFinalizing.value) {
-    showToast('현재 음성 구간 저장과 요약을 마친 뒤 다른 수업으로 이동해 주세요.', 'info')
-    return
-  }
   const local = sessions.value.find((item) => item.id === id)
   if (local) activeSession.value = local
   sidebarOpen.value = false
   try {
-    activeSession.value = await api.session(id)
+    updateSessionInBackground(await api.session(id))
   } catch (error) {
     showToast(error.message)
   }
 }
 
 async function renameSession({ id, title }) {
-  if (
-    activeSession.value?.id === id
-    && (recorder.isRecording.value || recorder.isProcessing.value || isFinalizing.value)
-  ) {
-    showToast('현재 수업 처리를 마친 뒤 제목을 수정해 주세요.', 'info')
-    return
-  }
   try {
-    replaceSession(await api.updateSession(id, { title }))
+    updateSessionInBackground(await api.updateSession(id, { title }))
     showToast('수업 제목을 수정했습니다.', 'success')
   } catch (error) {
     showToast(error.message)
@@ -150,14 +145,8 @@ async function renameSession({ id, title }) {
 }
 
 async function removeSession(id) {
-  if (
-    recordingSessionId === id
-    || (
-      activeSession.value?.id === id
-      && (recorder.isRecording.value || recorder.isProcessing.value || isFinalizing.value)
-    )
-  ) {
-    showToast('현재 처리 중인 수업은 삭제할 수 없습니다.', 'info')
+  if (recordingSessionId.value === id) {
+    showToast('녹음 중인 수업은 학습을 종료한 뒤 삭제해 주세요.', 'info')
     return
   }
   try {
@@ -172,13 +161,9 @@ async function removeSession(id) {
 }
 
 function openCreateModal() {
-  if (recorder.isRecording.value || recorder.isProcessing.value || isFinalizing.value) {
-    showToast('현재 음성 구간 저장과 요약을 마친 뒤 새 학습을 시작해 주세요.', 'info')
-    return
-  }
   newTitle.value = '새 수업'
   newSourceType.value = 'zoom'
-  newReferenceFile.value = null
+  newReferenceFiles.value = []
   createModalOpen.value = true
   sidebarOpen.value = false
 }
@@ -187,34 +172,46 @@ function chooseNewSource(sourceType) {
   newSourceType.value = sourceType
 }
 
-function referenceFileFromEvent(event) {
-  const file = event.target.files?.[0] || null
-  if (!file) return null
-  if (!file.name.toLowerCase().endsWith('.pdf')) {
-    event.target.value = ''
+function referenceFilesFromEvent(event) {
+  const files = [...(event.target.files || [])]
+  event.target.value = ''
+  if (!files.length) return []
+  if (files.length > 20) {
+    showToast('PDF 참고 자료는 최대 20개까지 선택할 수 있습니다.')
+    return []
+  }
+  if (files.some((file) => !file.name.toLowerCase().endsWith('.pdf'))) {
     showToast('PDF 파일만 선택할 수 있습니다.')
-    return null
+    return []
   }
-  if (file.size > 20 * 1024 * 1024) {
-    event.target.value = ''
-    showToast('PDF는 20MB 이하만 업로드할 수 있습니다.')
-    return null
+  const oversized = files.find((file) => file.size > 20 * 1024 * 1024)
+  if (oversized) {
+    showToast(`“${oversized.name}” PDF는 20MB 이하만 업로드할 수 있습니다.`)
+    return []
   }
-  return file
+  return files
 }
 
 function chooseNewReference(event) {
-  newReferenceFile.value = referenceFileFromEvent(event)
+  newReferenceFiles.value = referenceFilesFromEvent(event)
 }
 
 async function uploadActiveReference(event) {
-  const file = referenceFileFromEvent(event)
-  event.target.value = ''
-  if (!file || !activeSession.value || uploadingReference.value) return
+  const files = referenceFilesFromEvent(event)
+  if (!files.length || !activeSession.value || uploadingReference.value) return
+  if ((activeSession.value.references?.length || 0) + files.length > 20) {
+    showToast('PDF 참고 자료는 수업당 최대 20개까지 연결할 수 있습니다.')
+    return
+  }
+  if (activeSessionIsBeingRecorded.value) {
+    showToast('녹음 중인 수업의 PDF는 학습을 종료한 뒤 변경해 주세요.', 'info')
+    return
+  }
+  const sessionId = activeSession.value.id
   uploadingReference.value = true
   try {
-    replaceSession(await api.uploadReference(activeSession.value.id, file))
-    showToast('PDF 참고 자료를 연결하고 AI 노트를 갱신했습니다.', 'success')
+    updateSessionInBackground(await api.uploadReferences(sessionId, files))
+    showToast(`PDF 참고 자료 ${files.length}개를 연결하고 AI 노트를 갱신했습니다.`, 'success')
   } catch (error) {
     showToast(error.message)
   } finally {
@@ -235,20 +232,23 @@ function refreshMaterialInBackground(sessionId) {
   })
 }
 
-async function deleteActiveReference() {
-  if (!activeSession.value?.reference_name || deletingReference.value) return
-  const filename = activeSession.value.reference_name
-  if (!window.confirm(`“${filename}” PDF 참고 자료를 삭제할까요?`)) return
+async function deleteActiveReference(reference) {
+  if (!activeSession.value || !reference || deletingReferenceId.value) return
+  if (activeSessionIsBeingRecorded.value) {
+    showToast('녹음 중인 수업의 PDF는 학습을 종료한 뒤 변경해 주세요.', 'info')
+    return
+  }
+  if (!window.confirm(`“${reference.name}” PDF 참고 자료를 삭제할까요?`)) return
   const sessionId = activeSession.value.id
-  deletingReference.value = true
+  deletingReferenceId.value = reference.id
   try {
-    replaceSession(await api.deleteReference(sessionId))
+    updateSessionInBackground(await api.deleteReferenceDocument(sessionId, reference.id))
     showToast('PDF 참고 자료를 삭제했습니다. AI 노트를 갱신하고 있습니다.', 'success')
     refreshMaterialInBackground(sessionId)
   } catch (error) {
     showToast(error.message)
   } finally {
-    deletingReference.value = false
+    deletingReferenceId.value = ''
   }
 }
 
@@ -263,9 +263,9 @@ async function createSession() {
       source_type: newSourceType.value,
     })
     replaceSession(session)
-    if (newReferenceFile.value) {
+    if (newReferenceFiles.value.length) {
       try {
-        session = await api.uploadReference(session.id, newReferenceFile.value)
+        session = await api.uploadReferences(session.id, newReferenceFiles.value)
         replaceSession(session)
         referenceConnected = true
       } catch (error) {
@@ -273,7 +273,7 @@ async function createSession() {
         showToast(`수업은 만들었지만 PDF를 연결하지 못했습니다. ${error.message}`)
       }
     }
-    newReferenceFile.value = null
+    newReferenceFiles.value = []
     createModalOpen.value = false
     if (!referenceUploadFailed) {
       showToast(
@@ -288,7 +288,7 @@ async function createSession() {
 
 async function finalizeRecording(elapsedSeconds) {
   if (finalizationPromise) return finalizationPromise
-  const sessionId = recordingSessionId
+  const sessionId = recordingSessionId.value
   if (!sessionId) return undefined
 
   isFinalizing.value = true
@@ -298,14 +298,14 @@ async function finalizeRecording(elapsedSeconds) {
         status: 'completed',
         duration_seconds: elapsedSeconds,
       })
-      replaceSession(session)
+      updateSessionInBackground(session)
       showToast('실시간 변환과 최종 AI 노트 정리가 완료되었습니다.', 'success')
       return session
     } catch (error) {
       showToast(error.message)
       return undefined
     } finally {
-      recordingSessionId = null
+      recordingSessionId.value = null
       isFinalizing.value = false
     }
   })()
@@ -332,25 +332,28 @@ async function toggleRecording() {
   }
 
   try {
-    recordingSessionId = activeSession.value.id
-    await recorder.start('screen', activeSession.value.duration_seconds || 0)
-    replaceSession(
-      await api.updateStatus(activeSession.value.id, {
+    const sessionId = activeSession.value.id
+    const initialDuration = activeSession.value.duration_seconds || 0
+    recordingSessionId.value = sessionId
+    await recorder.start('screen', initialDuration)
+    updateSessionInBackground(
+      await api.updateStatus(sessionId, {
         status: 'recording',
-        duration_seconds: activeSession.value.duration_seconds || 0,
+        duration_seconds: initialDuration,
       }),
     )
   } catch (error) {
     await recorder.stop()
-    recordingSessionId = null
+    recordingSessionId.value = null
     showToast(error.message)
   }
 }
 
 async function appendSummaryNote(text) {
   if (!activeSession.value) return false
+  const sessionId = activeSession.value.id
   try {
-    replaceSession(await api.addSummaryNote(activeSession.value.id, text))
+    updateSessionInBackground(await api.addSummaryNote(sessionId, text))
     showToast('요약을 추가했습니다.', 'success')
     return true
   } catch (error) {
@@ -361,9 +364,10 @@ async function appendSummaryNote(text) {
 
 async function updateSummaries(payload) {
   if (!activeSession.value) return false
+  const sessionId = activeSession.value.id
   try {
-    replaceSession(await api.updateSummaries(activeSession.value.id, payload))
-    showToast('수업 요약을 수정했습니다.', 'success')
+    updateSessionInBackground(await api.updateSummaries(sessionId, payload))
+    showToast('수업 요약 변경 사항을 저장했습니다.', 'success')
     return true
   } catch (error) {
     showToast(error.message)
@@ -435,25 +439,35 @@ onMounted(async () => {
               <div class="reference-controls">
                 <button
                   class="reference-button"
-                  :title="activeSession.reference_name ? 'PDF 참고 자료 교체' : 'PDF 참고 자료 추가'"
-                  :disabled="uploadingReference || deletingReference || recorder.isRecording.value || recorder.isProcessing.value || isFinalizing"
+                  :title="activeSession.references?.length >= 20 ? 'PDF 참고 자료는 최대 20개까지 연결할 수 있습니다.' : 'PDF 참고 자료 추가'"
+                  :disabled="uploadingReference || deletingReferenceId || activeSession.references?.length >= 20 || activeSessionIsBeingRecorded"
                   @click="referenceInput?.click()"
                 >
                   <FileText :size="14" />
-                  {{ uploadingReference ? '처리 중…' : (activeSession.reference_name || 'PDF 자료 추가') }}
+                  {{ uploadingReference ? '처리 중…' : 'PDF 추가' }}
                 </button>
-                <button
-                  v-if="activeSession.reference_name"
-                  class="reference-delete-button"
-                  title="PDF 참고 자료 삭제"
-                  aria-label="PDF 참고 자료 삭제"
-                  :disabled="uploadingReference || deletingReference || recorder.isRecording.value || recorder.isProcessing.value || isFinalizing"
-                  @click="deleteActiveReference"
-                >
-                  <Trash2 :size="14" />
-                </button>
+                <details v-if="activeSession.references?.length" class="reference-list-menu">
+                  <summary>
+                    <FileText :size="14" /> 자료 {{ activeSession.references.length }}개
+                  </summary>
+                  <div class="reference-list-popover">
+                    <div v-for="reference in activeSession.references" :key="reference.id" class="reference-list-item">
+                      <span :title="reference.name">{{ reference.name }}</span>
+                      <button
+                        type="button"
+                        :title="`${reference.name} 삭제`"
+                        :aria-label="`${reference.name} 삭제`"
+                        :disabled="uploadingReference || deletingReferenceId || activeSessionIsBeingRecorded"
+                        @click.prevent="deleteActiveReference(reference)"
+                      >
+                        <LoaderCircle v-if="deletingReferenceId === reference.id" class="spin" :size="13" />
+                        <Trash2 v-else :size="13" />
+                      </button>
+                    </div>
+                  </div>
+                </details>
               </div>
-              <input ref="referenceInput" class="reference-file-input" type="file" accept="application/pdf,.pdf" @change="uploadActiveReference" />
+              <input ref="referenceInput" class="reference-file-input" type="file" accept="application/pdf,.pdf" multiple @change="uploadActiveReference" />
             </div>
           </div>
 
@@ -461,8 +475,6 @@ onMounted(async () => {
             ref="transcriptPanel"
             :summary-cards="activeSession.material?.summary_cards || []"
             :summary-notes="activeSession.material?.summary_notes || []"
-            :recording="recorder.isRecording.value"
-            :processing="recorder.isProcessing.value"
             :append-note="appendSummaryNote"
             :update-summaries="updateSummaries"
           />
@@ -516,13 +528,15 @@ onMounted(async () => {
             <input v-model="newTitle" maxlength="100" autofocus placeholder="예: Spring Security 기초" />
           </label>
           <label class="pdf-upload-label">
-            <span>참고 자료 PDF <small>선택 사항</small></span>
-            <input class="pdf-file-input" type="file" accept="application/pdf,.pdf" @change="chooseNewReference" />
+            <span>참고 자료 PDF <small>여러 개 선택 가능 · 선택 사항</small></span>
+            <input class="pdf-file-input" type="file" accept="application/pdf,.pdf" multiple @change="chooseNewReference" />
             <span class="pdf-upload-control">
               <FileText :size="17" />
-              <strong>{{ newReferenceFile?.name || 'PDF 파일 선택' }}</strong>
+              <strong :title="newReferenceFiles.map((file) => file.name).join(', ')">
+                {{ newReferenceFiles.length ? `PDF ${newReferenceFiles.length}개 선택됨` : 'PDF 파일 선택' }}
+              </strong>
             </span>
-            <small>PDF를 첨부하면 자료의 전문 용어를 참고해 녹음된 수업 내용을 요약합니다.</small>
+            <small>PDF를 첨부하면 모든 자료의 전문 용어를 참고해 녹음된 수업 내용을 요약합니다.</small>
           </label>
           <button class="modal-submit" type="submit" :disabled="!newTitle.trim()">
             학습 공간 만들기

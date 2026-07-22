@@ -10,6 +10,8 @@ from .schemas import ConversationMessage, LectureSession, StudyMaterial, Transcr
 
 LEGACY_IMPORT_MARKER = "legacy_json_import_v1"
 TRANSCRIPT_REFINEMENT_VERSION = 1
+MAX_STORED_LEARNING_ITEMS = 10
+MAX_STORED_KEYWORDS = 6
 
 
 class SessionRepository:
@@ -34,6 +36,7 @@ class SessionRepository:
         try:
             self._create_schema()
             self._import_legacy_json_once()
+            self._compact_persisted_learning_items()
         except Exception:
             self._connection.close()
             self._closed = True
@@ -46,6 +49,7 @@ class SessionRepository:
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
+                    title_revision INTEGER NOT NULL DEFAULT 0,
                     course_name TEXT NOT NULL,
                     source_type TEXT NOT NULL
                         CHECK(source_type IN ('zoom', 'youtube', 'demo')),
@@ -56,6 +60,7 @@ class SessionRepository:
                     duration_seconds REAL NOT NULL CHECK(duration_seconds >= 0),
                     reference_name TEXT,
                     reference_text TEXT,
+                    references_json TEXT NOT NULL DEFAULT '[]',
                     material_json TEXT NOT NULL
                 );
 
@@ -132,6 +137,14 @@ class SessionRepository:
                 self._connection.execute(
                     "ALTER TABLE sessions ADD COLUMN reference_text TEXT"
                 )
+            if "references_json" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN references_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            if "title_revision" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN title_revision INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _import_legacy_json_once(self) -> None:
         if not self.legacy_json_file or not self.legacy_json_file.exists():
@@ -184,14 +197,30 @@ class SessionRepository:
                 raise
 
     def _upsert_session(self, session: LectureSession) -> None:
+        session.sync_reference_fields()
+        self._compact_learning_items(session.material)
+        references_json = json.dumps(
+            [
+                {
+                    "id": reference.id,
+                    "name": reference.name,
+                    "text": reference.text,
+                    "uploaded_at": reference.uploaded_at.isoformat(),
+                }
+                for reference in session.references
+            ],
+            ensure_ascii=False,
+        )
         self._connection.execute(
             """
             INSERT INTO sessions(
-                id, title, course_name, source_type, source_url, created_at,
-                status, duration_seconds, reference_name, reference_text, material_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, title, title_revision, course_name, source_type, source_url, created_at,
+                status, duration_seconds, reference_name, reference_text,
+                references_json, material_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
+                title_revision = excluded.title_revision,
                 course_name = excluded.course_name,
                 source_type = excluded.source_type,
                 source_url = excluded.source_url,
@@ -200,11 +229,13 @@ class SessionRepository:
                 duration_seconds = excluded.duration_seconds,
                 reference_name = excluded.reference_name,
                 reference_text = excluded.reference_text,
+                references_json = excluded.references_json,
                 material_json = excluded.material_json
             """,
             (
                 session.id,
                 session.title,
+                session.title_revision,
                 session.course_name,
                 session.source_type,
                 session.source_url,
@@ -213,9 +244,11 @@ class SessionRepository:
                 session.duration_seconds,
                 session.reference_name,
                 session.reference_text,
+                references_json,
                 session.material.model_dump_json(),
             ),
         )
+
         self._connection.execute(
             "DELETE FROM segments WHERE session_id = ?", (session.id,)
         )
@@ -241,6 +274,40 @@ class SessionRepository:
                 for position, segment in enumerate(session.segments)
             ],
         )
+
+    @staticmethod
+    def _compact_learning_items(material: StudyMaterial) -> None:
+        material.learning_items = material.learning_items[-MAX_STORED_LEARNING_ITEMS:]
+        material.keywords = material.keywords[-MAX_STORED_KEYWORDS:]
+        material.keyword_explanations = {
+            keyword: material.keyword_explanations[keyword]
+            for keyword in material.keywords
+            if keyword in material.keyword_explanations
+        }
+
+    def _compact_persisted_learning_items(self) -> None:
+        """기존 DB에 쌓인 과도한 용어·개념도 시작 시 한 번에 줄입니다."""
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT id, material_json FROM sessions"
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(row["material_json"])
+                learning_items = payload.get("learning_items")
+                keywords = payload.get("keywords")
+                if (
+                    isinstance(learning_items, list)
+                    and len(learning_items) <= MAX_STORED_LEARNING_ITEMS
+                    and isinstance(keywords, list)
+                    and len(keywords) <= MAX_STORED_KEYWORDS
+                ):
+                    continue
+                material = StudyMaterial.model_validate(payload)
+                self._compact_learning_items(material)
+                self._connection.execute(
+                    "UPDATE sessions SET material_json = ? WHERE id = ?",
+                    (material.model_dump_json(), row["id"]),
+                )
 
     @staticmethod
     def _migrate_material_payload(payload: dict, duration_seconds: float) -> None:
@@ -278,9 +345,11 @@ class SessionRepository:
         ).fetchall()
         material_payload = json.loads(row["material_json"])
         self._migrate_material_payload(material_payload, float(row["duration_seconds"]))
+        references_payload = json.loads(row["references_json"] or "[]")
         return LectureSession(
             id=row["id"],
             title=row["title"],
+            title_revision=row["title_revision"],
             course_name=row["course_name"],
             source_type=row["source_type"],
             source_url=row["source_url"],
@@ -289,6 +358,7 @@ class SessionRepository:
             duration_seconds=row["duration_seconds"],
             reference_name=row["reference_name"],
             reference_text=row["reference_text"],
+            references=references_payload,
             material=StudyMaterial.model_validate(material_payload),
             segments=[TranscriptSegment.model_validate(dict(item)) for item in segment_rows],
             chat_messages=[
@@ -323,8 +393,42 @@ class SessionRepository:
     def save(self, session: LectureSession) -> LectureSession:
         snapshot = session.model_copy(deep=True)
         with self._lock, self._connection:
+            self._merge_newer_persisted_state(snapshot)
             self._upsert_session(snapshot)
         return snapshot.model_copy(deep=True)
+
+    def _merge_newer_persisted_state(self, snapshot: LectureSession) -> None:
+        """오래 실행된 백그라운드 작업이 최신 사용자 상태를 되돌리지 않게 합니다."""
+        row = self._connection.execute(
+            "SELECT title, title_revision, material_json FROM sessions WHERE id = ?",
+            (snapshot.id,),
+        ).fetchone()
+        if not row:
+            return
+
+        persisted_title_revision = int(row["title_revision"] or 0)
+        if persisted_title_revision > snapshot.title_revision:
+            snapshot.title = row["title"]
+            snapshot.title_revision = persisted_title_revision
+
+        persisted_material = StudyMaterial.model_validate(json.loads(row["material_json"]))
+        persisted_quiz_at = persisted_material.quiz_generated_at
+        incoming_quiz_at = snapshot.material.quiz_generated_at
+        persisted_quiz_is_newer = persisted_quiz_at is not None and (
+            incoming_quiz_at is None
+            or persisted_quiz_at > incoming_quiz_at
+            or (
+                persisted_quiz_at == incoming_quiz_at
+                and bool(persisted_material.quiz_questions)
+                and not snapshot.material.quiz_questions
+            )
+        )
+        if persisted_quiz_is_newer:
+            snapshot.material.quiz_questions = [
+                question.model_copy(deep=True)
+                for question in persisted_material.quiz_questions
+            ]
+            snapshot.material.quiz_generated_at = persisted_quiz_at
 
     def append_chat_messages(
         self,

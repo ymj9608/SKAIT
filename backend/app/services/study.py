@@ -21,6 +21,7 @@ from ..schemas import (
     SummaryCard,
     SummaryTopic,
     TranscriptSegment,
+    canonicalize_term_title,
 )
 
 
@@ -225,8 +226,10 @@ Follow these rules:
 2. Select an item only when not understanding it would likely block a non-major from following CURRENT_CONTEXT.
 3. Use PREVIOUS_CONTEXT only for disambiguation. Do not re-detect an item mentioned only in previous context.
 4. An item must be stated or strongly implied by CURRENT_CONTEXT. Never add merely related curriculum knowledge.
-5. For a term, use its canonical Korean or English technical spelling. If correcting obvious STT, output only the
-   canonical form and never retain the malformed phonetic rendering.
+5. For a term that CURRENT_CONTEXT states in English or as a recognizable Korean phonetic rendering of English, use
+   only its canonical English spelling. For example, write `Embedding`, not `임베딩(Embedding)` or `임베딩`. Never add
+   a Korean translation or Hangul transliteration around an English term. A term originally stated in Korean may keep
+   its standard Korean spelling. If correcting obvious STT, never retain the malformed phonetic rendering.
 6. For a concept, write a concise Korean proposition grounded in the transcript. Do not turn a term's dictionary
    definition into a duplicate concept.
 7. Exclude ordinary or broad filler such as data, model, analysis, code, service, system, and function unless it is part
@@ -237,7 +240,7 @@ Follow these rules:
 10. Return one JSON object only, without markdown or commentary.
 
 Output schema:
-{"items":[{"type":"term|concept","title":"표준 용어 또는 짧은 한국어 명제","explanation":"쉬운 한국어 설명"}]}"""
+{"items":[{"type":"term|concept","title":"영어 원어 또는 짧은 한국어 명제","explanation":"쉬운 한국어 설명"}]}"""
 
 
 LEARNING_ITEM_DETECTION_ICL_MESSAGES = [
@@ -261,7 +264,7 @@ LEARNING_ITEM_DETECTION_ICL_MESSAGES = [
                 "items": [
                     {
                         "type": "term",
-                        "title": "임베딩(Embedding)",
+                        "title": "Embedding",
                         "explanation": "단어나 문장의 의미를 컴퓨터가 비교할 수 있는 숫자 벡터로 바꾸는 표현 방식입니다.",
                     }
                 ]
@@ -279,7 +282,7 @@ LEARNING_ITEM_DETECTION_ICL_MESSAGES = [
 화살표 함수는 호출될 때 자기만의 this를 새로 만들지 않고 정의된 위치의 this를 사용합니다.
 </CURRENT_CONTEXT>
 <RECENTLY_EXPLAINED_ITEMS>
-["화살표 함수(Arrow Function)"]
+["Arrow Function"]
 </RECENTLY_EXPLAINED_ITEMS>""",
     },
     {
@@ -334,12 +337,12 @@ LEARNING_ITEM_DETECTION_ICL_MESSAGES = [
                 "items": [
                     {
                         "type": "term",
-                        "title": "상관계수(Correlation Coefficient)",
+                        "title": "상관계수",
                         "explanation": "두 변수가 함께 움직이는 정도와 방향을 수치로 나타낸 통계 지표입니다.",
                     },
                     {
                         "type": "term",
-                        "title": "이상치(Outlier)",
+                        "title": "Outlier",
                         "explanation": "다른 관측값들과 비교해 유난히 멀리 떨어진 값입니다. 분석 결과에 큰 영향을 줄 수 있어 확인이 필요합니다.",
                     },
                 ]
@@ -360,7 +363,10 @@ For learning_items, distinguish `term` from `concept` using the same definitions
 real-time detector. A term is a specialized noun phrase; a concept is a difficult relationship, rule, or principle
 expressed as a short Korean proposition. Exclude ordinary or overly broad filler, do not guess ambiguous STT, do not
 add merely related curriculum knowledge, and never pad the list. Every item needs a short Korean explanation for a
-non-major. If an obvious STT error is corrected, use only the canonical term. Return one valid JSON object only."""
+non-major. When the transcript states an English technical term or a recognizable Korean phonetic rendering of one,
+write only its canonical English spelling in the term title; never add a Korean translation or transliteration around
+it. A term originally stated in Korean may keep its standard Korean spelling. If an obvious STT error is corrected,
+use only the canonical term. Return one valid JSON object only."""
 
 
 SUMMARY_ICL_MESSAGES = [
@@ -565,6 +571,8 @@ def normalize_learning_items(
             continue
         item_type = str(candidate.get("type") or "").strip().lower()
         title = str(candidate.get("title") or candidate.get("term") or "").strip()
+        if item_type == "term":
+            title = canonicalize_term_title(title)
         explanation = str(candidate.get("explanation") or "").strip()
         identity = title.casefold()
         if (
@@ -1430,7 +1438,7 @@ class LocalStudyAssistant(StudyAssistant):
         current_raw_stt: str,
     ) -> str | None:
         # 생성 모델이 없는 모드에서 원시 STT를 정제본으로 승격하지 않습니다.
-        # 후속 요약·용어 탐지는 Qwen 정제에 성공한 구간만 소비해야 합니다.
+        # 후속 요약·용어 탐지는 생성 모델 정제에 성공한 구간만 소비해야 합니다.
         return None
 
     async def summarize(
@@ -1590,6 +1598,8 @@ Requirements:
   advantages, use cases, examples, or features from prior knowledge.
 - Select at most eight genuinely difficult `term` or `concept` items using the system definitions. Every item must have
   a concise title and a Korean explanation. Use an empty learning_items list when no such obstacle exists.
+- When a term is English or a recognizable Korean phonetic rendering of English, write only its canonical English
+  spelling in `title` (for example, `Embedding`, not `임베딩(Embedding)` or `임베딩`).
 - Write at most four review questions. Do not manufacture questions from administrative or break-time announcements.
 - The transcript can contain STT errors. Correct a technical term only when its canonical form is highly confident from
   the local context or REFERENCE_MATERIAL; otherwise omit that term.
@@ -1597,7 +1607,7 @@ Requirements:
   "trend set" that is clearly written as "train set". Never add a fact that appears only in the reference material to
   the summary, key points, learning items, or review questions.
 - Return exactly one JSON object with this schema:
-{{"summary":"한국어 요약","key_points":["한국어 핵심 포인트"],"learning_items":[{{"type":"term|concept","title":"표준 용어 또는 짧은 한국어 명제","explanation":"쉬운 한국어 설명"}}],"review_questions":["한국어 복습 질문"]}}
+{{"summary":"한국어 요약","key_points":["한국어 핵심 포인트"],"learning_items":[{{"type":"term|concept","title":"영어 원어 또는 짧은 한국어 명제","explanation":"쉬운 한국어 설명"}}],"review_questions":["한국어 복습 질문"]}}
 
 <TRANSCRIPT>
 {transcript}

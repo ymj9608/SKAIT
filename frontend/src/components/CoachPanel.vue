@@ -15,6 +15,7 @@ import {
   X,
 } from '@lucide/vue'
 import { api } from '../services/api'
+import { canonicalTermTitle } from '../utils/learningItems'
 import { sourcesWithSummaryCards } from '../utils/summaryEvidence'
 
 const props = defineProps({
@@ -59,7 +60,9 @@ const learningItems = computed(() => {
     explanation: material.value.keyword_explanations?.[keyword] || '',
   }))
 })
-const termItems = computed(() => learningItems.value.filter((item) => item.type === 'term'))
+const termItems = computed(() => learningItems.value
+  .filter((item) => item.type === 'term')
+  .map((item) => ({ ...item, title: canonicalTermTitle(item.title) })))
 const conceptItems = computed(() => learningItems.value.filter((item) => item.type === 'concept'))
 const quizItems = computed(() => material.value.quiz_questions || [])
 const activeQuizItem = computed(() => quizItems.value[quizIndex.value] || null)
@@ -507,7 +510,7 @@ function submitQuiz() {
         <section class="note-section learning-section learning-section--terms">
           <div class="section-heading">
             <span>
-              <BookCheck :size="17" /> 알아둘 용어
+              <BookCheck :size="17" /> 주요 용어
               <small class="learning-item-count">{{ termItems.length }}</small>
             </span>
           </div>
@@ -529,8 +532,8 @@ function submitQuiz() {
             </div>
           </div>
           <div v-else class="learning-empty">
-            <strong>아직 감지된 용어가 없습니다.</strong>
-            <p>새로운 전문 용어가 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
+            <strong>아직 감지된 주요 용어가 없습니다.</strong>
+            <p>새로운 주요 용어가 감지되면 최신 항목부터 이곳에 표시됩니다.</p>
           </div>
         </section>
 
@@ -538,7 +541,7 @@ function submitQuiz() {
           type="button"
           class="learning-section-resizer"
           role="separator"
-          aria-label="알아둘 용어와 중요 개념 영역 크기 조절"
+          aria-label="주요 용어와 중요 개념 영역 크기 조절"
           aria-orientation="horizontal"
           :aria-valuemin="MIN_LEARNING_SPLIT_PERCENT"
           :aria-valuemax="MAX_LEARNING_SPLIT_PERCENT"

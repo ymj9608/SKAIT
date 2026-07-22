@@ -8,7 +8,14 @@ FRONTEND_DIR="$PROJECT_DIR/frontend"
 
 env_value() {
   local key="$1"
-  local fallback="$2"
+  local fallback="$2"경영화(Pruning)
+모델 파라미터 중 중요하지 않은 부분을 제거해 모델을 작게 만드는 기법입니다.
+
+키벨류 캐시(Keylevel Cache)
+LLM이 처리하는 입력-출력 과정에서 사용되는 중간 데이터를 저장하는 메모리 공간으로, 다양한 정보가 포함됩니다.
+
+키벨레 캐시 컴프레션(Keylevel Cache Compression)
+긴 입력-출력 처리 시 인퍼런스 비용을 줄이기 위한 대표적인 기법으로, 키벨레 캐시를 압축하여 메모리 사용을 줄이는 방식입니다.
   local line=""
   if [[ -f "$BACKEND_DIR/.env" ]]; then
     line=$(grep -E "^${key}=" "$BACKEND_DIR/.env" | tail -n 1 || true)

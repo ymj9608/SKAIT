@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlparse
@@ -7,6 +8,28 @@ from pydantic import BaseModel, Field, field_serializer, model_validator
 
 
 EMPTY_SUMMARY_TEXT = "아직 정리할 수업 내용이 없습니다. 녹음을 시작하거나 텍스트를 추가해 주세요."
+KOREAN_TEXT_PATTERN = re.compile(r"[가-힣]")
+LATIN_TEXT_PATTERN = re.compile(r"[A-Za-z]")
+PARENTHESIZED_TERM_PATTERN = re.compile(
+    r"^\s*([^()]*)\(\s*([^()]*)\s*\)\s*$"
+)
+
+
+def canonicalize_term_title(title: str) -> str:
+    """한글 음역과 병기된 영어 기술 용어는 영어 원어만 유지합니다."""
+    normalized = title.strip()
+    match = PARENTHESIZED_TERM_PATTERN.fullmatch(normalized)
+    if not match:
+        return normalized
+
+    outer, parenthesized = (part.strip() for part in match.groups())
+    if (
+        KOREAN_TEXT_PATTERN.search(outer)
+        and LATIN_TEXT_PATTERN.search(parenthesized)
+        and not KOREAN_TEXT_PATTERN.search(parenthesized)
+    ):
+        return parenthesized
+    return normalized
 
 
 def utc_now() -> datetime:
@@ -35,6 +58,18 @@ class LearningItem(BaseModel):
     type: Literal["term", "concept"]
     title: str = Field(min_length=1, max_length=180)
     explanation: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_item(self) -> "LearningItem":
+        self.title = (
+            canonicalize_term_title(self.title)
+            if self.type == "term"
+            else self.title.strip()
+        )
+        self.explanation = self.explanation.strip()
+        if not self.title or not self.explanation:
+            raise ValueError("학습 항목의 제목과 설명은 비어 있을 수 없습니다.")
+        return self
 
 
 class SummaryTopic(BaseModel):
@@ -146,15 +181,39 @@ class SummaryNoteUpdate(SummaryNoteCreate):
 class SummaryBatchUpdate(BaseModel):
     cards: list[SummaryCardUpdate] = Field(default_factory=list, max_length=500)
     notes: list[SummaryNoteUpdate] = Field(default_factory=list, max_length=500)
+    deleted_card_ids: list[str] = Field(default_factory=list, max_length=500)
+    deleted_note_ids: list[str] = Field(default_factory=list, max_length=500)
 
     @model_validator(mode="after")
     def validate_updates(self) -> "SummaryBatchUpdate":
-        if not self.cards and not self.notes:
+        if not (
+            self.cards
+            or self.notes
+            or self.deleted_card_ids
+            or self.deleted_note_ids
+        ):
             raise ValueError("수정할 요약 내용을 입력해 주세요.")
+        self.deleted_card_ids = [item.strip() for item in self.deleted_card_ids]
+        self.deleted_note_ids = [item.strip() for item in self.deleted_note_ids]
+        if any(
+            not item or len(item) > 64
+            for item in (*self.deleted_card_ids, *self.deleted_note_ids)
+        ):
+            raise ValueError("삭제할 요약 ID가 올바르지 않습니다.")
         card_ids = [item.id for item in self.cards]
         note_ids = [item.id for item in self.notes]
-        if len(card_ids) != len(set(card_ids)) or len(note_ids) != len(set(note_ids)):
+        if (
+            len(card_ids) != len(set(card_ids))
+            or len(note_ids) != len(set(note_ids))
+            or len(self.deleted_card_ids) != len(set(self.deleted_card_ids))
+            or len(self.deleted_note_ids) != len(set(self.deleted_note_ids))
+        ):
             raise ValueError("같은 요약을 중복해서 수정할 수 없습니다.")
+        if (
+            set(card_ids) & set(self.deleted_card_ids)
+            or set(note_ids) & set(self.deleted_note_ids)
+        ):
+            raise ValueError("같은 요약을 동시에 수정하고 삭제할 수 없습니다.")
         return self
 
 
@@ -174,9 +233,17 @@ class StudyMaterial(BaseModel):
     summary_processed_through_seconds: float = Field(default=0, ge=0)
 
 
+class ReferenceDocument(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    name: str = Field(min_length=1, max_length=255)
+    text: str = Field(default="", exclude=True)
+    uploaded_at: datetime = Field(default_factory=utc_now)
+
+
 class LectureSession(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     title: str = "새 수업"
+    title_revision: int = Field(default=0, ge=0, exclude=True)
     course_name: str = "SKALA Zoom 수업"
     source_type: Literal["zoom", "youtube", "demo"] = "zoom"
     source_url: str | None = Field(default=None, max_length=2_048)
@@ -185,6 +252,7 @@ class LectureSession(BaseModel):
     duration_seconds: float = Field(default=0, ge=0)
     reference_name: str | None = Field(default=None, max_length=255)
     reference_text: str | None = Field(default=None, exclude=True)
+    references: list[ReferenceDocument] = Field(default_factory=list, max_length=20)
     segments: list[TranscriptSegment] = Field(default_factory=list)
     material: StudyMaterial = Field(default_factory=StudyMaterial)
     chat_messages: list[ConversationMessage] = Field(default_factory=list)
@@ -194,12 +262,37 @@ class LectureSession(BaseModel):
         self,
         segments: list[TranscriptSegment],
     ) -> list[dict]:
-        """API와 JSON에는 Qwen 정제를 통과한 전사만 노출합니다."""
+        """API와 JSON에는 생성 모델 정제를 통과한 전사만 노출합니다."""
         return [
             segment.model_dump(mode="json")
             for segment in segments
             if segment.is_refined
         ]
+
+    def sync_reference_fields(self) -> None:
+        """기존 단일 PDF 필드를 여러 PDF 목록과 호환되게 유지합니다."""
+        if not self.references and self.reference_name:
+            self.references = [
+                ReferenceDocument(
+                    id=f"legacy-{self.id}",
+                    name=self.reference_name,
+                    text=self.reference_text or "",
+                )
+            ]
+        self.reference_name = self.references[-1].name if self.references else None
+        self.reference_text = (
+            "\n\n".join(
+                f"[PDF 파일: {reference.name}]\n{reference.text.strip()}"
+                for reference in self.references
+                if reference.text.strip()
+            )
+            or None
+        )
+
+    @model_validator(mode="after")
+    def migrate_legacy_reference(self) -> "LectureSession":
+        self.sync_reference_fields()
+        return self
 
     @model_validator(mode="after")
     def migrate_legacy_summary_to_card(self) -> "LectureSession":

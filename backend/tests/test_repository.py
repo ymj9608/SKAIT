@@ -11,11 +11,14 @@ from app.schemas import (
     ConversationMessage,
     LearningItem,
     LectureSession,
+    QuizQuestion,
+    ReferenceDocument,
     SessionCreate,
     StudyMaterial,
     SummaryNote,
     SourceReference,
     TranscriptSegment,
+    utc_now,
 )
 
 
@@ -66,6 +69,61 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
 
 
 class SessionRepositoryTests(unittest.TestCase):
+    def test_excess_learning_items_are_compacted_before_storage(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = SessionRepository(Path(directory) / "reclass.sqlite3")
+            session = sample_session()
+            session.material.learning_items = [
+                LearningItem(
+                    type="term",
+                    title=f"용어 {index}",
+                    explanation=f"핵심 용어 {index}의 설명입니다.",
+                )
+                for index in range(15)
+            ]
+            saved = repository.save(session)
+            restored = repository.get(session.id)
+            repository.close()
+
+            self.assertEqual(len(saved.material.learning_items), 10)
+            self.assertEqual(len(restored.material.learning_items), 10)
+            self.assertEqual(saved.material.learning_items[0].title, "용어 5")
+            self.assertLessEqual(len(saved.material.keywords), 6)
+
+    def test_stale_background_save_preserves_newer_title_and_quiz(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = SessionRepository(Path(directory) / "reclass.sqlite3")
+            session = repository.save(sample_session())
+            stale_background_snapshot = repository.get(session.id)
+
+            updated = repository.get(session.id)
+            updated.title = "사용자가 수정한 제목"
+            updated.title_revision += 1
+            updated.material.quiz_questions = [
+                QuizQuestion(
+                    id="latest-quiz",
+                    question="콜백 함수의 특징으로 맞는 것은?",
+                    options=[
+                        "다른 함수에 전달될 수 있다.",
+                        "항상 즉시 실행된다.",
+                        "인자를 받을 수 없다.",
+                        "반환값을 만들 수 없다.",
+                    ],
+                    correct_option_index=0,
+                    explanation="요약에서는 콜백을 다른 함수에 전달되는 함수로 설명합니다.",
+                )
+            ]
+            updated.material.quiz_generated_at = utc_now()
+            repository.save(updated)
+
+            stale_background_snapshot.duration_seconds = 90
+            saved = repository.save(stale_background_snapshot)
+            repository.close()
+
+            self.assertEqual(saved.title, "사용자가 수정한 제목")
+            self.assertEqual(saved.material.quiz_questions[0].id, "latest-quiz")
+            self.assertEqual(saved.duration_seconds, 90)
+
     def test_chat_messages_survive_session_saves_and_restarts(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "reclass.sqlite3"
@@ -226,6 +284,36 @@ class SessionRepositoryTests(unittest.TestCase):
                 "요청 검증 흐름을 다시 복습하기",
             )
 
+    def test_multiple_pdf_references_survive_restart_without_exposing_text(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "reclass.sqlite3"
+            session = sample_session()
+            session.references.append(
+                ReferenceDocument(
+                    id="reference-2",
+                    name="fastapi-routing.pdf",
+                    text="FastAPI 경로 함수와 APIRouter를 설명합니다.",
+                )
+            )
+
+            repository = SessionRepository(database)
+            repository.save(session)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.get(session.id)
+            reopened.close()
+
+            self.assertEqual(
+                [reference.name for reference in restored.references],
+                ["javascript-basics.pdf", "fastapi-routing.pdf"],
+            )
+            self.assertIn("lexical this", restored.reference_text)
+            self.assertIn("APIRouter", restored.reference_text)
+            serialized = restored.model_dump(mode="json")
+            self.assertNotIn("text", serialized["references"][0])
+            self.assertNotIn("reference_text", serialized)
+
     def test_raw_and_refined_transcript_are_stored_but_raw_is_not_serialized(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "reclass.sqlite3"
@@ -333,6 +421,66 @@ class SessionRepositoryTests(unittest.TestCase):
             persisted = reopened.get("legacy-session")
             reopened.close()
             self.assertEqual(persisted.reference_name, "lecture.pdf")
+            self.assertIn("train set", persisted.reference_text)
+            self.assertEqual(
+                [reference.name for reference in persisted.references],
+                ["lecture.pdf"],
+            )
+
+    def test_existing_single_pdf_is_migrated_to_the_reference_list(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "reclass.sqlite3"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    course_name TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    source_url TEXT,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    duration_seconds REAL NOT NULL,
+                    reference_name TEXT,
+                    reference_text TEXT,
+                    material_json TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-pdf-session",
+                    "기존 PDF 수업",
+                    "SKALA",
+                    "zoom",
+                    None,
+                    "2026-07-21T00:00:00+00:00",
+                    "ready",
+                    0,
+                    "legacy-reference.pdf",
+                    "기존 PDF의 train set 설명",
+                    StudyMaterial().model_dump_json(),
+                ),
+            )
+            connection.commit()
+            connection.close()
+
+            repository = SessionRepository(database)
+            restored = repository.get("legacy-pdf-session")
+            repository.save(restored)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            persisted = reopened.get("legacy-pdf-session")
+            reopened.close()
+
+            self.assertEqual(len(persisted.references), 1)
+            self.assertEqual(persisted.references[0].id, "legacy-legacy-pdf-session")
+            self.assertEqual(persisted.references[0].name, "legacy-reference.pdf")
             self.assertIn("train set", persisted.reference_text)
 
     def test_update_and_delete_are_persistent(self) -> None:

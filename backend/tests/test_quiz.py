@@ -282,6 +282,60 @@ class QuizServiceTests(unittest.TestCase):
         shuffle.assert_called_once()
         self.assertIn("주제: REST API 통신", context)
 
+    def test_long_quiz_context_samples_early_middle_and_late_topics(self) -> None:
+        topic_titles = [
+            "가속도",
+            "뉴턴 법칙",
+            "광합성",
+            "행렬 곱셈",
+            "정규분포",
+            "회귀분석",
+            "클라우드",
+            "컨테이너",
+            "에이전트",
+        ]
+        cards = [
+            SummaryCard(
+                start_seconds=index * 120,
+                end_seconds=(index + 1) * 120,
+                topics=[
+                    SummaryTopic(
+                        title=topic_titles[index],
+                        summary=f"{topic_titles[index]}의 핵심 원리를 설명합니다.",
+                    )
+                ],
+            )
+            for index in range(9)
+        ]
+        target_indices = (2, 5, 8)
+        target_length = sum(
+            len(
+                f"주제: {topic_titles[index]}\n"
+                f"요약: {topic_titles[index]}의 핵심 원리를 설명합니다."
+            )
+            for index in target_indices
+        ) + 4
+
+        with (
+            patch("app.services.study.QUIZ_RANDOM.shuffle"),
+            patch("app.services.study.QUIZ_RANDOM.randrange", return_value=0),
+        ):
+            context = build_quiz_context(
+                StudyMaterial(summary_cards=cards),
+                max_chars=target_length,
+                randomize_sections=True,
+            )
+
+        selected_titles = {
+            line.removeprefix("주제: ")
+            for line in context.splitlines()
+            if line.startswith("주제: ")
+        }
+        self.assertEqual(
+            selected_titles,
+            {topic_titles[index] for index in target_indices},
+        )
+
     def test_question_count_is_always_between_one_and_ten(self) -> None:
         short_context = "요약: 하나의 짧은 주제입니다."
         long_context = "\n\n".join(
@@ -448,6 +502,8 @@ class QuizApiTests(unittest.TestCase):
             "퀴즈 생성 중 추가한 요약",
         )
         self.assertEqual(result.material.quiz_questions[0].id, "background-quiz")
+        self.assertIn("REST API 통신", assistant.context)
+        self.assertNotIn("퀴즈 생성 중 추가한 요약", assistant.context)
 
     def test_summary_rebuild_does_not_delete_a_user_generated_quiz(self) -> None:
         question = sample_question()

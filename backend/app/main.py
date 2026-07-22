@@ -11,8 +11,10 @@ from .schemas import (
     ChatResponse,
     ChatMessage,
     ConversationMessage,
+    EMPTY_SUMMARY_TEXT,
     HealthResponse,
     LectureSession,
+    ReferenceDocument,
     SessionCreate,
     SessionUpdate,
     StatusUpdate,
@@ -42,6 +44,7 @@ from .services.study import (
 
 
 settings = get_settings()
+MAX_REFERENCE_DOCUMENTS = 20
 
 
 @asynccontextmanager
@@ -112,6 +115,8 @@ def refresh_material_digest(session: LectureSession) -> None:
         for topic in card.topics
     ]
     if not topics:
+        session.material.summary = EMPTY_SUMMARY_TEXT
+        session.material.key_points = []
         return
     session.material.summary = " ".join(topic.summary for topic in topics[-2:])
     session.material.key_points = [
@@ -182,14 +187,14 @@ async def detect_learning_items_window(
         f"[{format_timestamp(segment.start_seconds)}] {segment.speaker}: {segment.text}"
         for segment in segments
     )
-    recent_titles = [item.title for item in session.material.learning_items[-20:]]
+    recent_titles = [item.title for item in session.material.learning_items[-10:]]
     detected = await assistant_or_503().detect_learning_items(
         previous_context,
         current_context,
         recent_titles,
     )
-    if detected:
-        session.material = merge_learning_items(session.material, detected)
+    # 새 항목이 없어도 이전 버전에서 과도하게 쌓인 항목 수는 보수적인 한도로 줄입니다.
+    session.material = merge_learning_items(session.material, detected)
 
 
 async def process_learning_item_batches(
@@ -244,7 +249,28 @@ async def summarize_window(
     if not segments:
         return
     previous_cards = session.material.summary_cards
-    previous_summary = summary_card_text(previous_cards[-1]) if previous_cards else ""
+    previous_context_parts: list[str] = []
+    if previous_cards:
+        previous_context_parts.append(
+            f"[직전 요약 카드]\n{summary_card_text(previous_cards[-1])[:1_200]}"
+        )
+    continuity_start = max(0, window_start - 60)
+    continuity_segments = [
+        segment
+        for segment in session.segments
+        if segment.is_refined
+        and continuity_start <= segment.start_seconds < window_start
+    ][-3:]
+    if continuity_segments:
+        previous_context_parts.append(
+            "[직전 발화 맥락·대명사와 이어지는 설명 확인 전용]\n"
+            + "\n".join(
+                f"[{format_timestamp(segment.start_seconds)}] "
+                f"{segment.speaker}: {segment.text}"
+                for segment in continuity_segments
+            )[:1_500]
+        )
+    previous_summary = "\n\n".join(previous_context_parts)
     recent_topics = [
         topic.title
         for card in previous_cards[-5:]
@@ -392,6 +418,7 @@ async def get_session(session_id: str) -> LectureSession:
 async def update_session(session_id: str, payload: SessionUpdate) -> LectureSession:
     session = get_session_or_404(session_id)
     session.title = payload.title
+    session.title_revision += 1
     return repository().save(session)
 
 
@@ -484,41 +511,94 @@ async def update_transcript(
     return repository().save(session)
 
 
-@app.post("/api/sessions/{session_id}/reference", response_model=LectureSession)
-async def upload_reference_pdf(
+async def attach_reference_pdfs(
     session_id: str,
-    document: UploadFile = File(...),
+    documents: list[UploadFile],
 ) -> LectureSession:
     session = get_session_or_404(session_id)
-    filename = (document.filename or "lecture-reference.pdf").replace("\\", "/").rsplit("/", 1)[-1]
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=415, detail="PDF 파일만 업로드할 수 있습니다.")
-    raw = await document.read(settings.max_pdf_mb * 1024 * 1024 + 1)
-    if not raw:
-        raise HTTPException(status_code=400, detail="PDF 파일이 비어 있습니다.")
-    if len(raw) > settings.max_pdf_mb * 1024 * 1024:
+    if not documents:
+        raise HTTPException(status_code=400, detail="업로드할 PDF 파일을 선택해 주세요.")
+    if len(session.references) + len(documents) > MAX_REFERENCE_DOCUMENTS:
         raise HTTPException(
-            status_code=413,
-            detail=f"PDF는 {settings.max_pdf_mb}MB 이하만 업로드할 수 있습니다.",
+            status_code=400,
+            detail=f"PDF 참고 자료는 수업당 최대 {MAX_REFERENCE_DOCUMENTS}개까지 연결할 수 있습니다.",
         )
-    try:
-        reference_text = extract_pdf_text(raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    session.reference_name = filename[:255]
-    session.reference_text = reference_text
+    extracted: list[ReferenceDocument] = []
+    for document in documents:
+        filename = (document.filename or "lecture-reference.pdf").replace("\\", "/").rsplit("/", 1)[-1]
+        if not filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=415, detail="PDF 파일만 업로드할 수 있습니다.")
+        raw = await document.read(settings.max_pdf_mb * 1024 * 1024 + 1)
+        if not raw:
+            raise HTTPException(status_code=400, detail=f"“{filename}” PDF 파일이 비어 있습니다.")
+        if len(raw) > settings.max_pdf_mb * 1024 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail=f"“{filename}” PDF는 {settings.max_pdf_mb}MB 이하만 업로드할 수 있습니다.",
+            )
+        try:
+            reference_text = extract_pdf_text(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"“{filename}”: {exc}") from exc
+        extracted.append(
+            ReferenceDocument(name=filename[:255], text=reference_text)
+        )
+
+    session.references.extend(extracted)
+    session.sync_reference_fields()
     if session.segments:
         await regenerate_material(session)
     return repository().save(session)
 
 
+@app.post("/api/sessions/{session_id}/references", response_model=LectureSession)
+async def upload_reference_pdfs(
+    session_id: str,
+    documents: list[UploadFile] = File(...),
+) -> LectureSession:
+    return await attach_reference_pdfs(session_id, documents)
+
+
+@app.post("/api/sessions/{session_id}/reference", response_model=LectureSession)
+async def upload_reference_pdf(
+    session_id: str,
+    document: UploadFile = File(...),
+) -> LectureSession:
+    """기존 단일 PDF 클라이언트와의 호환을 유지합니다."""
+    return await attach_reference_pdfs(session_id, [document])
+
+
+@app.delete(
+    "/api/sessions/{session_id}/references/{reference_id}",
+    response_model=LectureSession,
+)
+async def delete_reference_document(
+    session_id: str,
+    reference_id: str,
+) -> LectureSession:
+    session = get_session_or_404(session_id)
+    remaining = [
+        reference for reference in session.references if reference.id != reference_id
+    ]
+    if len(remaining) == len(session.references):
+        raise HTTPException(status_code=404, detail="PDF 참고 자료를 찾을 수 없습니다.")
+    session.references = remaining
+    if not remaining:
+        session.reference_name = None
+        session.reference_text = None
+    session.sync_reference_fields()
+    return repository().save(session)
+
+
 @app.delete("/api/sessions/{session_id}/reference", response_model=LectureSession)
 async def delete_reference_pdf(session_id: str) -> LectureSession:
-    """연결된 PDF를 즉시 제거하고, AI 노트 갱신은 별도 요청으로 처리합니다."""
+    """기존 단일 PDF 삭제 요청은 연결된 자료 전체를 제거합니다."""
     session = get_session_or_404(session_id)
+    session.references = []
     session.reference_name = None
     session.reference_text = None
+    session.sync_reference_fields()
     return repository().save(session)
 
 
@@ -604,8 +684,10 @@ async def update_summaries(
     session = get_session_or_404(session_id)
     cards_by_id = {card.id: card for card in session.material.summary_cards}
     notes_by_id = {note.id: note for note in session.material.summary_notes}
-    missing_card_ids = [item.id for item in payload.cards if item.id not in cards_by_id]
-    missing_note_ids = [item.id for item in payload.notes if item.id not in notes_by_id]
+    requested_card_ids = [item.id for item in payload.cards] + payload.deleted_card_ids
+    requested_note_ids = [item.id for item in payload.notes] + payload.deleted_note_ids
+    missing_card_ids = [item_id for item_id in requested_card_ids if item_id not in cards_by_id]
+    missing_note_ids = [item_id for item_id in requested_note_ids if item_id not in notes_by_id]
     if missing_card_ids or missing_note_ids:
         raise HTTPException(status_code=404, detail="수정할 요약 내용을 찾을 수 없습니다.")
 
@@ -613,6 +695,19 @@ async def update_summaries(
         cards_by_id[item.id].topics = [topic.model_copy(deep=True) for topic in item.topics]
     for item in payload.notes:
         notes_by_id[item.id].text = item.text
+
+    deleted_card_ids = set(payload.deleted_card_ids)
+    deleted_note_ids = set(payload.deleted_note_ids)
+    session.material.summary_cards = [
+        card
+        for card in session.material.summary_cards
+        if card.id not in deleted_card_ids
+    ]
+    session.material.summary_notes = [
+        note
+        for note in session.material.summary_notes
+        if note.id not in deleted_note_ids
+    ]
 
     refresh_material_digest(session)
     return repository().save(session)

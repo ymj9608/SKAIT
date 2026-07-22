@@ -675,6 +675,90 @@ select:focus-visible {
   gap: 5px;
 }
 
+.reference-list-menu {
+  position: relative;
+}
+
+.reference-list-menu > summary {
+  display: flex;
+  height: 30px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid #e0e7e2;
+  border-radius: 8px;
+  color: #5f7068;
+  background: #f8faf8;
+  font-size: 9.5px;
+  font-weight: 700;
+  list-style: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.reference-list-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reference-list-menu[open] > summary,
+.reference-list-menu > summary:hover {
+  border-color: #bdccc4;
+  background: #f0f5f2;
+}
+
+.reference-list-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 7px);
+  right: 0;
+  display: grid;
+  width: min(300px, 72vw);
+  max-height: 240px;
+  gap: 3px;
+  padding: 7px;
+  overflow-y: auto;
+  border: 1px solid #dfe6e1;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(47, 65, 56, 0.16);
+}
+
+.reference-list-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 9px;
+  border-radius: 7px;
+  background: #fafbf9;
+}
+
+.reference-list-item > span {
+  overflow: hidden;
+  flex: 1;
+  color: #53635c;
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-list-item > button {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 auto;
+  padding: 0;
+  place-items: center;
+  border-radius: 6px;
+  color: #a86a5c;
+  background: transparent;
+}
+
+.reference-list-item > button:hover:not(:disabled) {
+  color: var(--brand-dark);
+  background: var(--brand-soft);
+}
+
 .reference-delete-button {
   display: grid;
   width: 30px;
@@ -1294,6 +1378,34 @@ select:focus-visible {
 
 .summary-card--editing .summary-card-body {
   padding-left: 16px;
+}
+
+.summary-delete-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 11px 0 0;
+}
+
+.summary-delete-row button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  border: 1px solid #f0d1ca;
+  border-radius: 8px;
+  color: #b54630;
+  background: #fff7f4;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.summary-delete-row button:hover {
+  border-color: #df927f;
+  background: #ffebe5;
+}
+
+.summary-delete-row--note {
+  padding: 0 0 8px;
 }
 
 .summary-topic {
@@ -2029,11 +2141,30 @@ body.is-resizing-learning-sections {
 }
 
 .source-chip > span {
+  display: flex;
   overflow: hidden;
   flex: 1;
-  color: #81908a;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.source-chip strong {
+  overflow: hidden;
+  color: var(--brand-dark);
+  font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.source-chip small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #81908a;
+  font-size: 8px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .typing {

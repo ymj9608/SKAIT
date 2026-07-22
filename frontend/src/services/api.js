@@ -57,8 +57,15 @@ export const api = {
     data.append('document', file, file.name)
     return request(`/sessions/${id}/reference`, { method: 'POST', body: data })
   },
+  uploadReferences: (id, files) => {
+    const data = new FormData()
+    files.forEach((file) => data.append('documents', file, file.name))
+    return request(`/sessions/${id}/references`, { method: 'POST', body: data })
+  },
   deleteReference: (id) =>
     request(`/sessions/${id}/reference`, { method: 'DELETE' }),
+  deleteReferenceDocument: (id, referenceId) =>
+    request(`/sessions/${id}/references/${referenceId}`, { method: 'DELETE' }),
   uploadAudio: (id, blob, startSeconds, endSeconds) => {
     const data = new FormData()
     const extension = blob.type.includes('ogg') ? 'ogg' : 'webm'

@@ -12,7 +12,7 @@ SKAIT는 **SKALA AI TUTOR**의 줄임말입니다. Zoom·YouTube 수업을 기�
 ## 핵심 기능
 
 - Zoom·YouTube 수업 음성 자동 기록 및 AI 요약
-- 알아둘 용어와 중요 개념 정리
+- 주요 용어와 중요 개념 정리
 - 수업 요약 기반 `QUIZ` 생성·재생성(최대 10문제)
 - 수업 근거를 확인할 수 있는 AI 질문 답변
 - PDF 참고 자료를 활용한 전문 용어 보정과 요약
@@ -23,8 +23,8 @@ SKAIT는 **SKALA AI TUTOR**의 줄임말입니다. Zoom·YouTube 수업을 기�
 macOS에서는 [Google Chrome](https://www.google.com/chrome/)과 [Homebrew](https://brew.sh/)를 먼저 설치해 주세요.
 
 ```bash
-git clone https://github.com/ymj9608/study-agent.git zoom_study_agent
-cd zoom_study_agent
+git clone https://github.com/ymj9608/study-agent.git SKAIT
+cd SKAIT
 python3 setting.py
 ```
 
@@ -40,7 +40,7 @@ python3 open.py
 
 1. `새 학습 시작`에서 Zoom 또는 YouTube를 선택하고 수업을 만듭니다. PDF 첨부는 선택 사항입니다.
 2. `학습 시작`을 누른 뒤 Chrome 공유 창에서 수업 탭과 `탭 오디오 공유`를 선택합니다.
-3. 수업을 재생하면 요약, 알아둘 용어와 중요 개념이 자동으로 정리됩니다.
+3. 수업을 재생하면 요약, 주요 용어와 중요 개념이 자동으로 정리됩니다.
 4. 요약이 표시되면 `퀴즈 생성`으로 문제를 풀거나 `질문하기`에서 수업 내용을 질문합니다.
 5. 수업이 끝나면 `학습 종료`를 누릅니다.
 

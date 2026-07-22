@@ -2318,7 +2318,7 @@ class LocalStudyAssistant(StudyAssistant):
         current_raw_stt: str,
     ) -> str | None:
         # 생성 모델이 없는 모드에서 원시 STT를 정제본으로 승격하지 않습니다.
-        # 후속 요약·용어 탐지는 Qwen 정제에 성공한 구간만 소비해야 합니다.
+        # 후속 요약·용어 탐지는 생성 모델 정제에 성공한 구간만 소비해야 합니다.
         return None
 
     async def summarize(

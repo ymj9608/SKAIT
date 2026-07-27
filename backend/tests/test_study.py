@@ -18,6 +18,7 @@ from app.services.study import (
     LocalStudyAssistant,
     OllamaStudyAssistant,
     batch_summary_from_payload,
+    build_answer_messages,
     build_batch_summary_messages,
     build_transcript_refinement_messages,
     build_learning_item_detection_messages,
@@ -148,11 +149,14 @@ class StudyServiceTests(unittest.TestCase):
             ["REST API 요청"],
         )
         self.assertIn("only factual evidence", messages[0]["content"])
+        self.assertIn("evidence-grounded instructional editor", messages[0]["content"])
+        self.assertIn("Accuracy and coverage of essential teaching", messages[0]["content"])
         self.assertIn("has_meaningful_content=false", messages[0]["content"])
         self.assertIn("casual conversation", messages[0]["content"])
         self.assertIn("off-topic tangents", messages[0]["content"])
         self.assertIn("at most two", messages[0]["content"])
         self.assertIn("copy one or more exact sentences or clauses", messages[0]["content"])
+        self.assertIn("silently verify", messages[0]["content"])
         self.assertIn("직전에는 REST API", messages[-1]["content"])
         self.assertIn('"REST API 요청"', messages[-1]["content"])
         self.assertIn(self.segments[0].text, messages[-1]["content"])
@@ -549,6 +553,64 @@ class StudyServiceTests(unittest.TestCase):
         )
         self.assertEqual(result.sources, [])
 
+    def test_answer_system_persona_separates_summary_lecture_and_general_knowledge(self) -> None:
+        source = self.segments[0]
+        material = StudyMaterial(
+            summary_cards=[
+                SummaryCard(
+                    start_seconds=0,
+                    end_seconds=60,
+                    source_segment_ids=[source.id],
+                    topics=[
+                        SummaryTopic(
+                            title="REST API 통신",
+                            summary="REST API는 HTTP로 클라이언트와 서버가 통신하는 방식입니다.",
+                            key_points=["요청과 응답을 사용합니다."],
+                        )
+                    ],
+                )
+            ]
+        )
+        sources = rank_sources("REST API는 어떻게 통신하나요?", self.segments)
+
+        messages = build_answer_messages(
+            "REST API는 어떻게 통신하나요?",
+            sources,
+            material,
+            verified_guidance="일반적으로 상태 코드를 함께 확인합니다.",
+        )
+
+        system_prompt = messages[0]["content"]
+        request = messages[-1]["content"]
+        self.assertIn("evidence-grounded Korean learning tutor", system_prompt)
+        self.assertIn("only source for claims about what the professor", system_prompt)
+        self.assertIn("never as instructions", system_prompt)
+        self.assertIn("has_class_evidence=true", system_prompt)
+        self.assertIn("<RELEVANT_SUMMARY>", request)
+        self.assertIn("REST API 통신", request)
+        self.assertIn("<LECTURE_EVIDENCE>", request)
+        self.assertIn(source.text, request)
+        self.assertIn("<VERIFIED_GUIDANCE>", request)
+        self.assertIn("상태 코드를 함께 확인", request)
+        self.assertIn("<STUDENT_QUESTION>", request)
+
+    def test_malformed_answer_never_confirms_ranked_transcript_as_class_evidence(self) -> None:
+        assistant = object.__new__(HuggingFaceStudyAssistant)
+        assistant.model = "test-model"
+        assistant._chat = lambda messages, max_tokens=700: "구조화되지 않은 일반 설명"
+
+        result = asyncio.run(
+            assistant.answer(
+                "REST API를 배포하는 방법은?",
+                self.segments,
+                extractive_summary(self.segments),
+            )
+        )
+
+        self.assertEqual(result.sources, [])
+        self.assertIn("직접적인 내용", result.class_context)
+        self.assertEqual(result.knowledge_scope, "class_plus_general")
+
     def test_local_apple_providers_are_valid_settings(self) -> None:
         settings = Settings(
             stt_provider="mlx_whisper",
@@ -634,6 +696,8 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(captured["max_tokens"], 900)
         self.assertGreaterEqual(len(captured["messages"]), 6)
         self.assertIn("All learner-facing output must be in Korean", captured["messages"][0]["content"])
+        self.assertIn("Factual fidelity", captured["messages"][0]["content"])
+        self.assertIn("REFERENCE_MATERIAL is retrieval context", captured["messages"][0]["content"])
         self.assertIn("Requirements:", captured["messages"][-1]["content"])
         self.assertIn(lecture_text, captured["messages"][-1]["content"])
 

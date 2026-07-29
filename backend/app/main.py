@@ -529,14 +529,9 @@ async def attach_reference_pdfs(
         filename = (document.filename or "lecture-reference.pdf").replace("\\", "/").rsplit("/", 1)[-1]
         if not filename.lower().endswith(".pdf"):
             raise HTTPException(status_code=415, detail="PDF 파일만 업로드할 수 있습니다.")
-        raw = await document.read(settings.max_pdf_mb * 1024 * 1024 + 1)
+        raw = await document.read()
         if not raw:
             raise HTTPException(status_code=400, detail=f"“{filename}” PDF 파일이 비어 있습니다.")
-        if len(raw) > settings.max_pdf_mb * 1024 * 1024:
-            raise HTTPException(
-                status_code=413,
-                detail=f"“{filename}” PDF는 {settings.max_pdf_mb}MB 이하만 업로드할 수 있습니다.",
-            )
         try:
             reference_text = extract_pdf_text(raw)
         except ValueError as exc:

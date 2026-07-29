@@ -184,11 +184,6 @@ function referenceFilesFromEvent(event) {
     showToast('PDF 파일만 선택할 수 있습니다.')
     return []
   }
-  const oversized = files.find((file) => file.size > 20 * 1024 * 1024)
-  if (oversized) {
-    showToast(`“${oversized.name}” PDF는 20MB 이하만 업로드할 수 있습니다.`)
-    return []
-  }
   return files
 }
 

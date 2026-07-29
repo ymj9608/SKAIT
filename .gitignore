@@ -26,6 +26,7 @@ htmlcov/
 # Personal lecture records (SQLite, legacy JSON, WAL and backups)
 backend/data/*
 !backend/data/.gitkeep
+sessions.json
 *.db
 *.db-journal
 *.db-shm
@@ -44,6 +45,7 @@ backend/downloads/
 *.mp3
 *.m4a
 *.mp4
+*.pdf
 models/
 *.gguf
 *.safetensors

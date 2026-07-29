@@ -23,7 +23,7 @@ SKAIT는 **SKALA AI TUTOR**의 줄임말입니다. Zoom·YouTube 수업을 기�
 macOS에서는 [Google Chrome](https://www.google.com/chrome/)과 [Homebrew](https://brew.sh/)를 먼저 설치해 주세요.
 
 ```bash
-git clone https://github.com/ymj9608/study-agent.git SKAIT
+git clone https://github.com/ymj9608/SKAIT.git
 cd SKAIT
 python3 setting.py
 ```

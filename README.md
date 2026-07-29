@@ -34,6 +34,7 @@ python3 setting.py
 python3 open.py
 ```
 
+
 준비가 완료되면 SKAIT가 Chrome에서 자동으로 열립니다. 종료할 때는 터미널에서 `Ctrl+C`를 누르세요.
 
 로컬 LLM은 Ollama의 `qwen3:8b`를 사용합니다. 최초 설정에서는 약 5.2GB 모델을 내려받으므로 시간이 걸릴 수 있습니다.
@@ -41,7 +42,10 @@ python3 open.py
 ## 빠른 사용 및 기능 확인
 
 1. `새 학습 시작`에서 Zoom 또는 YouTube를 선택하고 수업을 만듭니다. PDF 첨부는 선택 사항입니다.
+![사용방법1](docs/images/01.newsection.png)
 2. `학습 시작`을 누른 뒤 Chrome 공유 창에서 수업 탭과 `탭 오디오 공유`를 선택합니다.
+![사용방법2](docs/images/02.startclick.png)
+![사용방법3](docs/images/03.tapaudio.png)
 3. 수업을 재생하면 요약, 주요 용어와 중요 개념이 자동으로 정리됩니다.
 4. 요약이 표시되면 `퀴즈 생성`으로 문제를 풀거나 `질문하기`에서 수업 내용을 질문합니다.
 5. 수업이 끝나면 `학습 종료`를 누릅니다.

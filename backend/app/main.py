@@ -431,8 +431,21 @@ async def create_category(payload: CategoryCreate) -> StudyCategory:
 
 @app.patch("/api/categories/{category_id}", response_model=StudyCategory)
 async def update_category(category_id: str, payload: CategoryUpdate) -> StudyCategory:
+    update_parent = "parent_id" in payload.model_fields_set
+    if (
+        update_parent
+        and payload.parent_id
+        and not repository().get_category(payload.parent_id)
+    ):
+        raise HTTPException(status_code=404, detail="상위 레포지토리를 찾을 수 없습니다.")
     try:
-        category = repository().update_category(category_id, payload.name)
+        category = repository().update_category(
+            category_id,
+            payload.name,
+            parent_id=payload.parent_id,
+            update_parent=update_parent,
+            sort_order=payload.sort_order,
+        )
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="같은 이름의 카테고리가 이미 있습니다.") from exc
     except ValueError as exc:

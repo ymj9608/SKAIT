@@ -142,6 +142,7 @@ class SessionRepository:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL COLLATE NOCASE UNIQUE,
                     parent_id TEXT,
+                    sort_order REAL NOT NULL DEFAULT 0,
                     is_default INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
@@ -265,9 +266,37 @@ class SessionRepository:
                     "ALTER TABLE categories ADD COLUMN is_default "
                     "INTEGER NOT NULL DEFAULT 0"
                 )
+            category_sort_order_missing = "sort_order" not in category_columns
+            if category_sort_order_missing:
+                self._connection.execute(
+                    "ALTER TABLE categories ADD COLUMN sort_order "
+                    "REAL NOT NULL DEFAULT 0"
+                )
+                category_rows = self._connection.execute(
+                    """
+                    SELECT id, parent_id
+                    FROM categories
+                    ORDER BY created_at ASC
+                    """
+                ).fetchall()
+                sibling_positions: dict[str | None, int] = {}
+                updates: list[tuple[int, str]] = []
+                for row in category_rows:
+                    parent_id = row["parent_id"]
+                    position = sibling_positions.get(parent_id, 0)
+                    updates.append((position, row["id"]))
+                    sibling_positions[parent_id] = position + 1
+                self._connection.executemany(
+                    "UPDATE categories SET sort_order = ? WHERE id = ?",
+                    updates,
+                )
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_categories_parent_created_at "
                 "ON categories(parent_id, created_at ASC)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_categories_parent_sort_order "
+                "ON categories(parent_id, sort_order ASC, created_at ASC)"
             )
 
     def _ensure_default_category(self) -> None:
@@ -314,8 +343,8 @@ class SessionRepository:
                 self._connection.execute(
                     """
                     INSERT INTO categories(
-                        id, name, parent_id, is_default, created_at
-                    ) VALUES (?, ?, NULL, 1, ?)
+                        id, name, parent_id, sort_order, is_default, created_at
+                    ) VALUES (?, ?, NULL, 0, 1, ?)
                     """,
                     (
                         default_category.id,
@@ -326,10 +355,6 @@ class SessionRepository:
 
             self._connection.execute(
                 "UPDATE categories SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END",
-                (default_category_id,),
-            )
-            self._connection.execute(
-                "UPDATE categories SET parent_id = NULL WHERE id = ?",
                 (default_category_id,),
             )
             self._connection.execute(
@@ -353,7 +378,7 @@ class SessionRepository:
         with self._lock:
             row = self._connection.execute(
                 """
-                SELECT id, name, parent_id, is_default, created_at
+                SELECT id, name, parent_id, sort_order, is_default, created_at
                 FROM categories
                 WHERE is_default = 1
                 LIMIT 1
@@ -775,15 +800,15 @@ class SessionRepository:
     def list_categories(self) -> list[StudyCategory]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT id, name, parent_id, is_default, created_at "
-                "FROM categories ORDER BY is_default DESC, created_at ASC"
+                "SELECT id, name, parent_id, sort_order, is_default, created_at "
+                "FROM categories ORDER BY sort_order ASC, created_at ASC"
             ).fetchall()
             return [StudyCategory.model_validate(dict(row)) for row in rows]
 
     def get_category(self, category_id: str) -> StudyCategory | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT id, name, parent_id, is_default, created_at "
+                "SELECT id, name, parent_id, sort_order, is_default, created_at "
                 "FROM categories WHERE id = ?",
                 (category_id,),
             ).fetchone()
@@ -799,37 +824,103 @@ class SessionRepository:
                 ).fetchone()
                 if not parent_exists:
                     raise ValueError("상위 카테고리를 찾을 수 없습니다.")
+            last_order = self._connection.execute(
+                "SELECT MAX(sort_order) FROM categories WHERE parent_id IS ?",
+                (snapshot.parent_id,),
+            ).fetchone()[0]
+            snapshot.sort_order = float(last_order) + 1 if last_order is not None else 0
             self._connection.execute(
                 """
                 INSERT INTO categories(
-                    id, name, parent_id, is_default, created_at
-                ) VALUES (?, ?, ?, 0, ?)
+                    id, name, parent_id, sort_order, is_default, created_at
+                ) VALUES (?, ?, ?, ?, 0, ?)
                 """,
                 (
                     snapshot.id,
                     snapshot.name,
                     snapshot.parent_id,
+                    snapshot.sort_order,
                     snapshot.created_at.isoformat(),
                 ),
             )
         return snapshot
 
-    def update_category(self, category_id: str, name: str) -> StudyCategory | None:
+    def update_category(
+        self,
+        category_id: str,
+        name: str | None = None,
+        *,
+        parent_id: str | None = None,
+        update_parent: bool = False,
+        sort_order: float | None = None,
+    ) -> StudyCategory | None:
         with self._lock, self._connection:
             category = self._connection.execute(
-                "SELECT 1 FROM categories WHERE id = ?",
+                "SELECT id, parent_id FROM categories WHERE id = ?",
                 (category_id,),
             ).fetchone()
             if not category:
                 return None
-            cursor = self._connection.execute(
-                "UPDATE categories SET name = ? WHERE id = ?",
-                (name, category_id),
-            )
-            if cursor.rowcount == 0:
-                return None
+
+            if update_parent and parent_id:
+                ancestor = self._connection.execute(
+                    "SELECT id, parent_id FROM categories WHERE id = ?",
+                    (parent_id,),
+                ).fetchone()
+                if not ancestor:
+                    raise ValueError("상위 레포지토리를 찾을 수 없습니다.")
+                visited: set[str] = set()
+                while ancestor:
+                    ancestor_id = str(ancestor["id"])
+                    if ancestor_id == category_id:
+                        raise ValueError(
+                            "레포지토리를 자기 자신이나 하위 레포지토리 안으로 "
+                            "이동할 수 없습니다."
+                        )
+                    if ancestor_id in visited:
+                        raise ValueError("레포지토리 구조에 순환 참조가 있습니다.")
+                    visited.add(ancestor_id)
+                    ancestor_parent_id = ancestor["parent_id"]
+                    if not ancestor_parent_id:
+                        break
+                    ancestor = self._connection.execute(
+                        "SELECT id, parent_id FROM categories WHERE id = ?",
+                        (ancestor_parent_id,),
+                    ).fetchone()
+
+            updates: list[str] = []
+            values: list[str | None] = []
+            if name is not None:
+                updates.append("name = ?")
+                values.append(name)
+            if update_parent:
+                updates.append("parent_id = ?")
+                values.append(parent_id)
+                if sort_order is None:
+                    last_order = self._connection.execute(
+                        """
+                        SELECT MAX(sort_order)
+                        FROM categories
+                        WHERE parent_id IS ? AND id != ?
+                        """,
+                        (parent_id, category_id),
+                    ).fetchone()[0]
+                    sort_order = (
+                        float(last_order) + 1
+                        if last_order is not None
+                        else 0
+                    )
+            if sort_order is not None:
+                updates.append("sort_order = ?")
+                values.append(sort_order)
+            if updates:
+                values.append(category_id)
+                self._connection.execute(
+                    f"UPDATE categories SET {', '.join(updates)} WHERE id = ?",
+                    values,
+                )
             row = self._connection.execute(
-                "SELECT id, name, parent_id, is_default, created_at "
+                "SELECT id, name, parent_id, sort_order, is_default, created_at "
                 "FROM categories WHERE id = ?",
                 (category_id,),
             ).fetchone()

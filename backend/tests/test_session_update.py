@@ -3,6 +3,7 @@ import unittest
 from pydantic import ValidationError
 
 from app.schemas import (
+    CategoryUpdate,
     SessionUpdate,
     SummaryBatchUpdate,
     SummaryNoteCreate,
@@ -12,6 +13,23 @@ from app.schemas import (
 
 
 class SessionUpdateTests(unittest.TestCase):
+    def test_category_can_move_to_parent_or_root_without_renaming(self) -> None:
+        nested = CategoryUpdate(parent_id="category-1", sort_order=-1.5)
+        independent = CategoryUpdate(parent_id=None, sort_order=2)
+
+        self.assertEqual(nested.parent_id, "category-1")
+        self.assertEqual(nested.sort_order, -1.5)
+        self.assertIsNone(independent.parent_id)
+        self.assertIn("parent_id", independent.model_fields_set)
+
+    def test_null_category_sort_order_is_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CategoryUpdate(sort_order=None)
+
+    def test_empty_category_update_is_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CategoryUpdate()
+
     def test_title_is_trimmed(self) -> None:
         payload = SessionUpdate(title="  수정한 수업 제목  ")
         self.assertEqual(payload.title, "수정한 수업 제목")

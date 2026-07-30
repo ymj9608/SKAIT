@@ -9,6 +9,43 @@ export function compareSessionOrder(first, second) {
   return String(first.id || '').localeCompare(String(second.id || ''))
 }
 
+export function compareCategoryOrder(first, second) {
+  const firstOrder = Number.isFinite(Number(first.sort_order)) ? Number(first.sort_order) : 0
+  const secondOrder = Number.isFinite(Number(second.sort_order)) ? Number(second.sort_order) : 0
+  if (firstOrder !== secondOrder) return firstOrder - secondOrder
+
+  const firstCreatedAt = Date.parse(first.created_at || '') || 0
+  const secondCreatedAt = Date.parse(second.created_at || '') || 0
+  if (firstCreatedAt !== secondCreatedAt) return firstCreatedAt - secondCreatedAt
+  return String(first.id || '').localeCompare(String(second.id || ''))
+}
+
+export function canPlaceCategory(categories, categoryId, parentId) {
+  const categoryById = new Map(categories.map((category) => [category.id, category]))
+  const category = categoryById.get(categoryId)
+  if (!category) return false
+
+  const normalizedParentId = parentId || null
+  if (!normalizedParentId) return true
+
+  let ancestor = categoryById.get(normalizedParentId)
+  const visited = new Set()
+  while (ancestor && !visited.has(ancestor.id)) {
+    if (ancestor.id === categoryId) return false
+    visited.add(ancestor.id)
+    ancestor = ancestor.parent_id
+      ? categoryById.get(ancestor.parent_id)
+      : null
+  }
+  return categoryById.has(normalizedParentId)
+}
+
+export function canMoveCategory(categories, categoryId, parentId) {
+  const category = categories.find((item) => item.id === categoryId)
+  if (!category || (category.parent_id || null) === (parentId || null)) return false
+  return canPlaceCategory(categories, categoryId, parentId)
+}
+
 export function buildVisibleCategoryGroups(
   categories,
   sessions,
@@ -44,6 +81,7 @@ export function buildVisibleCategoryGroups(
     children.push(category)
     childrenByParent.set(parentId, children)
   })
+  childrenByParent.forEach((children) => children.sort(compareCategoryOrder))
 
   function containsActiveSession(categoryId, checking = new Set()) {
     if (checking.has(categoryId)) return false

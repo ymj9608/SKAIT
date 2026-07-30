@@ -22,6 +22,8 @@ import skaitLogo from '../assets/brand/skait-logo.png'
 import skaitWordmark from '../assets/brand/skait-wordmark.png'
 import {
   buildVisibleCategoryGroups,
+  canPlaceCategory,
+  compareCategoryOrder,
   compareSessionOrder,
 } from '../utils/categoryTree'
 
@@ -40,6 +42,7 @@ const emit = defineEmits([
   'rename',
   'delete',
   'move',
+  'move-category',
   'create-category',
   'rename-category',
   'delete-category',
@@ -50,7 +53,9 @@ const activeCategoryMenuId = ref('')
 const collapsedGroupIds = ref(new Set())
 const categoryEditor = ref(null)
 const draggedSessionId = ref('')
+const draggedCategoryId = ref('')
 const dropTargetCategoryId = ref('')
+const categoryDropTarget = ref(null)
 const sessionDropTarget = ref(null)
 const sidebarWidth = ref(268)
 const resizingSidebar = ref(false)
@@ -199,19 +204,64 @@ function moveSession(sessionId, categoryId, sortOrder) {
 
 function startSessionDrag(event, sessionId) {
   draggedSessionId.value = sessionId
+  draggedCategoryId.value = ''
   dropTargetCategoryId.value = ''
+  categoryDropTarget.value = null
   sessionDropTarget.value = null
   event.dataTransfer.effectAllowed = 'move'
   event.dataTransfer.setData('text/plain', sessionId)
 }
 
-function dragOverCategory(categoryId) {
-  if (!draggedSessionId.value) return
-  dropTargetCategoryId.value = categoryId || 'root'
+function startCategoryDrag(event, categoryId) {
+  draggedCategoryId.value = categoryId
+  draggedSessionId.value = ''
+  dropTargetCategoryId.value = ''
+  categoryDropTarget.value = null
   sessionDropTarget.value = null
-  if (categoryId && collapsedGroupIds.value.has(categoryId)) {
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('application/x-skait-category', categoryId)
+  event.dataTransfer.setData('text/plain', categoryId)
+}
+
+function dragOverCategory(event, category) {
+  if (draggedCategoryId.value) {
+    if (draggedCategoryId.value === category.id) {
+      categoryDropTarget.value = null
+      return
+    }
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const pointerRatio = (event.clientY - bounds.top) / Math.max(bounds.height, 1)
+    const position = pointerRatio < 0.28
+      ? 'before'
+      : pointerRatio > 0.72
+        ? 'after'
+        : 'inside'
+    const parentId = position === 'inside'
+      ? category.id
+      : category.parent_id || null
+    if (!canPlaceCategory(props.categories, draggedCategoryId.value, parentId)) {
+      categoryDropTarget.value = null
+      return
+    }
+    categoryDropTarget.value = { id: category.id, position, parentId }
+    dropTargetCategoryId.value = ''
+    sessionDropTarget.value = null
+    if (position === 'inside' && collapsedGroupIds.value.has(category.id)) {
+      const next = new Set(collapsedGroupIds.value)
+      next.delete(category.id)
+      collapsedGroupIds.value = next
+    }
+    return
+  }
+  if (!draggedSessionId.value) {
+    return
+  }
+  dropTargetCategoryId.value = category.id
+  categoryDropTarget.value = null
+  sessionDropTarget.value = null
+  if (collapsedGroupIds.value.has(category.id)) {
     const next = new Set(collapsedGroupIds.value)
-    next.delete(categoryId)
+    next.delete(category.id)
     collapsedGroupIds.value = next
   }
 }
@@ -219,8 +269,74 @@ function dragOverCategory(categoryId) {
 function leaveCategoryDropTarget(event, categoryId) {
   const currentTarget = event.currentTarget
   if (currentTarget.contains(event.relatedTarget)) return
-  const targetId = categoryId || 'root'
-  if (dropTargetCategoryId.value === targetId) dropTargetCategoryId.value = ''
+  if (dropTargetCategoryId.value === categoryId) dropTargetCategoryId.value = ''
+  if (categoryDropTarget.value?.id === categoryId) categoryDropTarget.value = null
+}
+
+function dropOnCategory(event, category) {
+  if (draggedCategoryId.value) {
+    dropCategory(category)
+    return
+  }
+  dropSession(event, category.id)
+}
+
+function categoriesInParent(parentId, excludedId = '') {
+  return props.categories
+    .filter((category) => (
+      (category.parent_id || null) === (parentId || null)
+      && category.id !== excludedId
+    ))
+    .sort(compareCategoryOrder)
+}
+
+function categorySortOrder(category) {
+  const sortOrder = Number(category?.sort_order)
+  return Number.isFinite(sortOrder) ? sortOrder : 0
+}
+
+function nextCategorySortOrder(parentId, excludedId) {
+  const siblings = categoriesInParent(parentId, excludedId)
+  if (!siblings.length) return 0
+  return categorySortOrder(siblings.at(-1)) + 1
+}
+
+function categoryInsertionSortOrder(categoryId, targetCategory, position) {
+  const parentId = targetCategory.parent_id || null
+  const siblings = categoriesInParent(parentId, categoryId)
+  let insertionIndex = siblings.findIndex((category) => category.id === targetCategory.id)
+  if (insertionIndex < 0) return nextCategorySortOrder(parentId, categoryId)
+  if (position === 'after') insertionIndex += 1
+
+  const previous = siblings[insertionIndex - 1]
+  const next = siblings[insertionIndex]
+  if (previous && next) {
+    return (categorySortOrder(previous) + categorySortOrder(next)) / 2
+  }
+  if (previous) return categorySortOrder(previous) + 1
+  if (next) return categorySortOrder(next) - 1
+  return 0
+}
+
+function dropCategory(targetCategory) {
+  const categoryId = draggedCategoryId.value
+  const target = categoryDropTarget.value
+  if (!target || target.id !== targetCategory.id) {
+    endCategoryDrag()
+    return
+  }
+  const parentId = target.parentId || null
+  if (canPlaceCategory(props.categories, categoryId, parentId)) {
+    const sortOrder = target.position === 'inside'
+      ? nextCategorySortOrder(targetCategory.id, categoryId)
+      : categoryInsertionSortOrder(
+          categoryId,
+          targetCategory,
+          target.position,
+        )
+    emit('move-category', { id: categoryId, parentId, sortOrder })
+  }
+  endCategoryDrag()
 }
 
 function dropSession(event, categoryId) {
@@ -295,6 +411,14 @@ function dropSessionBeside(event, targetSession) {
 function endSessionDrag() {
   draggedSessionId.value = ''
   dropTargetCategoryId.value = ''
+  categoryDropTarget.value = null
+  sessionDropTarget.value = null
+}
+
+function endCategoryDrag() {
+  draggedCategoryId.value = ''
+  dropTargetCategoryId.value = ''
+  categoryDropTarget.value = null
   sessionDropTarget.value = null
 }
 
@@ -427,13 +551,21 @@ onBeforeUnmount(() => {
           :class="{
             'category-row--active': group.containsActiveSession,
             'category-row--drop-target': dropTargetCategoryId === group.id,
+            'category-row--drop-inside': categoryDropTarget?.id === group.id && categoryDropTarget.position === 'inside',
+            'category-row--drop-before': categoryDropTarget?.id === group.id && categoryDropTarget.position === 'before',
+            'category-row--drop-after': categoryDropTarget?.id === group.id && categoryDropTarget.position === 'after',
+            'category-row--dragging': draggedCategoryId === group.id,
           }"
-          @dragenter.prevent="dragOverCategory(group.id)"
-          @dragover.prevent="dragOverCategory(group.id)"
+          :draggable="true"
+          @dragstart="startCategoryDrag($event, group.id)"
+          @dragend="endCategoryDrag"
+          @dragenter.prevent="dragOverCategory($event, group)"
+          @dragover.prevent="dragOverCategory($event, group)"
           @dragleave="leaveCategoryDropTarget($event, group.id)"
-          @drop.prevent="dropSession($event, group.id)"
+          @drop.prevent="dropOnCategory($event, group)"
         >
           <button class="category-toggle" :aria-expanded="groupIsOpen(group.id)" @click="toggleGroup(group.id)">
+            <GripVertical class="category-drag-handle" :size="13" title="드래그해서 상위 레포지토리 변경" />
             <ChevronDown v-if="groupIsOpen(group.id)" :size="14" />
             <ChevronRight v-else :size="14" />
             <FolderOpen v-if="groupIsOpen(group.id)" :size="16" />

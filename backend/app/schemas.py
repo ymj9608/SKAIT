@@ -321,6 +321,7 @@ class StudyCategory(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     name: str = Field(min_length=1, max_length=40)
     parent_id: str | None = Field(default=None, max_length=64)
+    sort_order: float = Field(default=0, allow_inf_nan=False)
     is_default: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
@@ -489,8 +490,26 @@ class CategoryCreate(BaseModel):
         return self
 
 
-class CategoryUpdate(CategoryCreate):
-    pass
+class CategoryUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=40)
+    parent_id: str | None = Field(default=None, max_length=64)
+    sort_order: float | None = Field(default=None, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def normalize_update(self) -> "CategoryUpdate":
+        if (
+            self.name is None
+            and "parent_id" not in self.model_fields_set
+            and "sort_order" not in self.model_fields_set
+        ):
+            raise ValueError("수정할 레포지토리 정보를 입력해 주세요.")
+        if "sort_order" in self.model_fields_set and self.sort_order is None:
+            raise ValueError("올바른 레포지토리 순서를 입력해 주세요.")
+        if self.name is not None:
+            self.name = self.name.strip()
+            if not self.name:
+                raise ValueError("레포지토리 이름을 입력해 주세요.")
+        return self
 
 
 class TranscriptCreate(BaseModel):

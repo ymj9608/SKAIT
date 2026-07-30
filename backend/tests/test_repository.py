@@ -199,6 +199,110 @@ class SessionRepositoryTests(unittest.TestCase):
             self.assertTrue(restored.is_default)
             self.assertEqual(saved.category_id, restored.id)
 
+    def test_category_can_move_under_another_category_or_become_independent(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            first = repository.create_category(StudyCategory(name="첫 번째"))
+            second = repository.create_category(StudyCategory(name="두 번째"))
+
+            nested = repository.update_category(
+                first.id,
+                parent_id=second.id,
+                update_parent=True,
+            )
+            independent = repository.update_category(
+                first.id,
+                parent_id=None,
+                update_parent=True,
+            )
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.get_category(first.id)
+            reopened.close()
+
+            self.assertEqual(nested.parent_id, second.id)
+            self.assertIsNone(independent.parent_id)
+            self.assertIsNone(restored.parent_id)
+
+    def test_sibling_category_order_survives_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            parent = repository.create_category(StudyCategory(name="상위"))
+            first = repository.create_category(
+                StudyCategory(name="첫 번째", parent_id=parent.id)
+            )
+            second = repository.create_category(
+                StudyCategory(name="두 번째", parent_id=parent.id)
+            )
+
+            reordered = repository.update_category(
+                second.id,
+                sort_order=first.sort_order - 1,
+            )
+            repository.close()
+
+            reopened = SessionRepository(database)
+            siblings = [
+                category
+                for category in reopened.list_categories()
+                if category.parent_id == parent.id
+            ]
+            reopened.close()
+
+            self.assertLess(reordered.sort_order, first.sort_order)
+            self.assertEqual(
+                [category.id for category in siblings],
+                [second.id, first.id],
+            )
+
+    def test_category_cannot_move_into_itself_or_its_descendant(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = SessionRepository(Path(directory) / "skait.sqlite3")
+            parent = repository.create_category(StudyCategory(name="상위"))
+            child = repository.create_category(
+                StudyCategory(name="하위", parent_id=parent.id)
+            )
+
+            with self.assertRaisesRegex(ValueError, "하위 레포지토리"):
+                repository.update_category(
+                    parent.id,
+                    parent_id=child.id,
+                    update_parent=True,
+                )
+            with self.assertRaisesRegex(ValueError, "자기 자신"):
+                repository.update_category(
+                    parent.id,
+                    parent_id=parent.id,
+                    update_parent=True,
+                )
+
+            restored = repository.get_category(parent.id)
+            repository.close()
+
+            self.assertIsNone(restored.parent_id)
+
+    def test_default_category_move_survives_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            default_category = repository.default_category()
+            parent = repository.create_category(StudyCategory(name="전체 수업"))
+            repository.update_category(
+                default_category.id,
+                parent_id=parent.id,
+                update_parent=True,
+            )
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.default_category()
+            reopened.close()
+
+            self.assertEqual(restored.parent_id, parent.id)
+
     def test_nested_categories_survive_restart_and_are_promoted_when_parent_is_deleted(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "skait.sqlite3"
@@ -239,7 +343,9 @@ class SessionRepositoryTests(unittest.TestCase):
 
             connection = sqlite3.connect(database)
             connection.execute("DROP INDEX idx_categories_parent_created_at")
+            connection.execute("DROP INDEX idx_categories_parent_sort_order")
             connection.execute("ALTER TABLE categories DROP COLUMN parent_id")
+            connection.execute("ALTER TABLE categories DROP COLUMN sort_order")
             connection.commit()
             connection.close()
 

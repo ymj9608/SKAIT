@@ -293,6 +293,29 @@ async function renameCategory({ id, name }) {
   }
 }
 
+async function moveCategory({ id, parentId, sortOrder }) {
+  try {
+    const previousCategory = categories.value.find((item) => item.id === id)
+    const category = await api.updateCategory(id, {
+      parent_id: parentId,
+      sort_order: sortOrder,
+    })
+    const index = categories.value.findIndex((item) => item.id === id)
+    if (index >= 0) categories.value.splice(index, 1, category)
+    const destinationName = parentId ? categoryPath(parentId) : ''
+    showToast(
+      (previousCategory?.parent_id || null) === (parentId || null)
+        ? '레포지토리 순서를 변경했습니다.'
+        : destinationName
+          ? `레포지토리를 “${destinationName}” 아래로 옮겼습니다.`
+          : '독립 레포지토리로 옮겼습니다.',
+      'success',
+    )
+  } catch (error) {
+    showToast(error.message)
+  }
+}
+
 async function removeCategory(id) {
   try {
     const removedCategory = categories.value.find((category) => category.id === id)
@@ -608,6 +631,7 @@ onMounted(async () => {
       @rename="renameSession"
       @delete="removeSession"
       @move="moveSession"
+      @move-category="moveCategory"
       @create-category="createCategory"
       @rename-category="renameCategory"
       @delete-category="removeCategory"

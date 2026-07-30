@@ -3,6 +3,9 @@ import test from 'node:test'
 
 import {
   buildVisibleCategoryGroups,
+  canPlaceCategory,
+  canMoveCategory,
+  compareCategoryOrder,
   compareSessionOrder,
 } from '../src/utils/categoryTree.js'
 
@@ -48,6 +51,15 @@ test('sorts sessions by the persisted manual order instead of their date', () =>
   assert.deepEqual(ordered.map((session) => session.id), ['older', 'newer'])
 })
 
+test('sorts sibling repositories by the persisted manual order', () => {
+  const ordered = [
+    { id: 'second', sort_order: 20 },
+    { id: 'first', sort_order: -5 },
+  ].sort(compareCategoryOrder)
+
+  assert.deepEqual(ordered.map((category) => category.id), ['first', 'second'])
+})
+
 test('places an uncategorized session in the default repository', () => {
   const groups = buildVisibleCategoryGroups(
     [
@@ -61,4 +73,22 @@ test('places an uncategorized session in the default repository', () => {
     groups.find((group) => group.id === 'default').sessions.map((session) => session.id),
     ['session-1'],
   )
+})
+
+test('allows a repository to move under another repository or become independent', () => {
+  assert.equal(canMoveCategory(categories, 'child', null), true)
+  assert.equal(canMoveCategory(categories, 'grandchild', 'parent'), true)
+})
+
+test('blocks no-op and circular repository moves', () => {
+  assert.equal(canMoveCategory(categories, 'parent', 'parent'), false)
+  assert.equal(canMoveCategory(categories, 'parent', 'child'), false)
+  assert.equal(canMoveCategory(categories, 'parent', 'grandchild'), false)
+  assert.equal(canMoveCategory(categories, 'child', 'parent'), false)
+})
+
+test('allows sibling reordering while still blocking circular placement', () => {
+  assert.equal(canPlaceCategory(categories, 'child', 'parent'), true)
+  assert.equal(canPlaceCategory(categories, 'parent', null), true)
+  assert.equal(canPlaceCategory(categories, 'parent', 'grandchild'), false)
 })

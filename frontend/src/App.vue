@@ -19,6 +19,7 @@ import CoachPanel from './components/CoachPanel.vue'
 import TranscriptPanel from './components/TranscriptPanel.vue'
 import { useRecorder } from './composables/useRecorder'
 import { api } from './services/api'
+import { getRecordingActionLabel } from './utils/recordingAction'
 import skaitLogo from './assets/brand/skait-logo.png'
 
 const sessions = ref([])
@@ -99,10 +100,9 @@ const sessionDate = computed(() => {
   }).format(new Date(activeSession.value.created_at))
 })
 
-const recordingActionLabel = computed(() => {
-  if (recorder.isRecording.value) return '학습 종료'
-  return '학습 시작'
-})
+const recordingActionLabel = computed(() => (
+  getRecordingActionLabel(activeSession.value, recorder.isRecording.value)
+))
 
 const activeSessionIsBeingRecorded = computed(() => (
   Boolean(recordingSessionId.value && activeSession.value?.id === recordingSessionId.value)

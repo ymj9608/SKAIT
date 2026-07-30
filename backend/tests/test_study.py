@@ -835,7 +835,7 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual([item.type for item in detected], ["term"])
         self.assertEqual(detected[0].title, "Self-Attention")
 
-    def test_merge_learning_items_keeps_recent_ten_and_syncs_legacy_terms(self) -> None:
+    def test_merge_learning_items_keeps_all_unique_items_and_syncs_legacy_terms(self) -> None:
         material = extractive_summary(self.segments)
         material.learning_items = [
             LearningItem(type="term", title=f"기존용어{index}", explanation="기존 한국어 설명입니다.")
@@ -854,14 +854,15 @@ class StudyServiceTests(unittest.TestCase):
             ),
         ]
         merged = merge_learning_items(material, detected)
-        self.assertEqual(len(merged.learning_items), 10)
+        self.assertEqual(len(merged.learning_items), 22)
+        self.assertEqual(merged.learning_items[0].title, "기존용어0")
         self.assertEqual(merged.learning_items[-1].type, "concept")
         self.assertIn("REST API", merged.keywords)
         self.assertIn("HTTP", merged.keyword_explanations["REST API"])
         self.assertLessEqual(len(merged.keywords), 6)
 
-        trimmed_without_new_items = merge_learning_items(material, [])
-        self.assertEqual(len(trimmed_without_new_items.learning_items), 10)
+        preserved_without_new_items = merge_learning_items(material, [])
+        self.assertEqual(len(preserved_without_new_items.learning_items), 20)
 
     def test_merge_learning_items_removes_parenthetical_spelling_duplicates(self) -> None:
         material = StudyMaterial(

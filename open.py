@@ -203,8 +203,11 @@ def start_backend(
     env_values: dict[str, str], processes: list[subprocess.Popen[bytes]]
 ) -> subprocess.Popen[bytes] | None:
     if backend_is_ready():
-        print("백엔드 서버 재사용: http://127.0.0.1:8000")
-        return None
+        raise OpenError(
+            "8000번 포트에 기존 SKAIT 백엔드가 실행 중입니다. "
+            "이전 버전을 재사용하지 않도록 실행을 중단했습니다. "
+            "기존 SKAIT 터미널에서 Ctrl+C로 서버를 종료한 뒤 다시 실행해 주세요."
+        )
 
     python = venv_command("python")
     if not python.exists():
@@ -236,8 +239,11 @@ def start_backend(
 
 def start_frontend(processes: list[subprocess.Popen[bytes]]) -> subprocess.Popen[bytes] | None:
     if frontend_is_ready():
-        print("프론트엔드 서버 재사용: http://127.0.0.1:5173")
-        return None
+        raise OpenError(
+            "5173번 포트에 기존 SKAIT 프론트엔드가 실행 중입니다. "
+            "이전 버전을 재사용하지 않도록 실행을 중단했습니다. "
+            "기존 SKAIT 터미널에서 Ctrl+C로 서버를 종료한 뒤 다시 실행해 주세요."
+        )
 
     npm = shutil.which("npm")
     vite = FRONTEND_DIR / "node_modules" / ".bin" / (

@@ -10,7 +10,6 @@ from .schemas import ConversationMessage, LectureSession, StudyMaterial, Transcr
 
 LEGACY_IMPORT_MARKER = "legacy_json_import_v1"
 TRANSCRIPT_REFINEMENT_VERSION = 1
-MAX_STORED_LEARNING_ITEMS = 10
 MAX_STORED_KEYWORDS = 6
 
 
@@ -36,7 +35,7 @@ class SessionRepository:
         try:
             self._create_schema()
             self._import_legacy_json_once()
-            self._compact_persisted_learning_items()
+            self._compact_persisted_legacy_keywords()
         except Exception:
             self._connection.close()
             self._closed = True
@@ -198,7 +197,7 @@ class SessionRepository:
 
     def _upsert_session(self, session: LectureSession) -> None:
         session.sync_reference_fields()
-        self._compact_learning_items(session.material)
+        self._compact_legacy_keywords(session.material)
         references_json = json.dumps(
             [
                 {
@@ -276,8 +275,7 @@ class SessionRepository:
         )
 
     @staticmethod
-    def _compact_learning_items(material: StudyMaterial) -> None:
-        material.learning_items = material.learning_items[-MAX_STORED_LEARNING_ITEMS:]
+    def _compact_legacy_keywords(material: StudyMaterial) -> None:
         material.keywords = material.keywords[-MAX_STORED_KEYWORDS:]
         material.keyword_explanations = {
             keyword: material.keyword_explanations[keyword]
@@ -285,25 +283,22 @@ class SessionRepository:
             if keyword in material.keyword_explanations
         }
 
-    def _compact_persisted_learning_items(self) -> None:
-        """기존 DB에 쌓인 과도한 용어·개념도 시작 시 한 번에 줄입니다."""
+    def _compact_persisted_legacy_keywords(self) -> None:
+        """기존 API 호환용 keyword 필드만 보수적인 크기로 유지합니다."""
         with self._lock, self._connection:
             rows = self._connection.execute(
                 "SELECT id, material_json FROM sessions"
             ).fetchall()
             for row in rows:
                 payload = json.loads(row["material_json"])
-                learning_items = payload.get("learning_items")
                 keywords = payload.get("keywords")
                 if (
-                    isinstance(learning_items, list)
-                    and len(learning_items) <= MAX_STORED_LEARNING_ITEMS
-                    and isinstance(keywords, list)
+                    isinstance(keywords, list)
                     and len(keywords) <= MAX_STORED_KEYWORDS
                 ):
                     continue
                 material = StudyMaterial.model_validate(payload)
-                self._compact_learning_items(material)
+                self._compact_legacy_keywords(material)
                 self._connection.execute(
                     "UPDATE sessions SET material_json = ? WHERE id = ?",
                     (material.model_dump_json(), row["id"]),

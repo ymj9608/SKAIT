@@ -43,6 +43,8 @@ const quizNoticeOpen = ref(false)
 const learningSplit = ref(null)
 const learningSplitPercent = ref(50)
 const resizingLearningSplit = ref(false)
+const learningModalType = ref('')
+const learningModal = ref(null)
 
 const PANEL_WIDTH_STORAGE_KEY = 'skait-coach-panel-width'
 const LEARNING_SPLIT_STORAGE_KEY = 'skait-learning-section-split'
@@ -66,6 +68,12 @@ const termItems = computed(() => learningItems.value
   .filter((item) => item.type === 'term')
   .map((item) => ({ ...item, title: canonicalTermTitle(item.title) })))
 const conceptItems = computed(() => learningItems.value.filter((item) => item.type === 'concept'))
+const learningModalItems = computed(() => (
+  learningModalType.value === 'term' ? termItems.value : conceptItems.value
+))
+const learningModalTitle = computed(() => (
+  learningModalType.value === 'term' ? '주요 용어' : '중요 개념'
+))
 const savedQuizItems = computed(() => material.value.quiz_questions || [])
 const quizItems = computed(() => quizSnapshotItems.value)
 const activeQuizItem = computed(() => quizItems.value[quizIndex.value] || null)
@@ -231,6 +239,16 @@ function resetLearningSplit() {
   saveLearningSplit()
 }
 
+async function openLearningModal(type) {
+  learningModalType.value = type
+  await nextTick()
+  learningModal.value?.focus()
+}
+
+function closeLearningModal() {
+  learningModalType.value = ''
+}
+
 function visibleEvidence(sources) {
   return summaryEvidenceItems(material.value.summary_cards || [], sources || [])
 }
@@ -273,6 +291,7 @@ watch(
   () => props.session?.id,
   () => {
     resetQuizState()
+    closeLearningModal()
     syncStoredMessages()
   },
   { immediate: true },
@@ -525,10 +544,17 @@ function submitQuiz() {
       >
         <section class="note-section learning-section learning-section--terms">
           <div class="section-heading">
-            <span>
+            <button
+              type="button"
+              class="learning-heading-button"
+              aria-haspopup="dialog"
+              title="주요 용어 크게 보기"
+              @click="openLearningModal('term')"
+            >
               <BookCheck :size="17" /> 주요 용어
               <small class="learning-item-count">{{ termItems.length }}</small>
-            </span>
+              <ChevronRight class="learning-heading-chevron" :size="14" />
+            </button>
           </div>
           <div v-if="termItems.length" class="keyword-list">
             <div
@@ -574,10 +600,17 @@ function submitQuiz() {
 
         <section class="note-section learning-section learning-section--concepts">
           <div class="section-heading">
-            <span>
+            <button
+              type="button"
+              class="learning-heading-button learning-heading-button--concept"
+              aria-haspopup="dialog"
+              title="중요 개념 크게 보기"
+              @click="openLearningModal('concept')"
+            >
               <Sparkles :size="17" /> 중요 개념
               <small class="learning-item-count learning-item-count--concept">{{ conceptItems.length }}</small>
-            </span>
+              <ChevronRight class="learning-heading-chevron" :size="14" />
+            </button>
           </div>
           <div v-if="conceptItems.length" class="keyword-list">
             <div
@@ -675,6 +708,64 @@ function submitQuiz() {
   </aside>
 
   <Teleport to="body">
+    <Transition name="quiz">
+      <div v-if="learningModalType" class="quiz-backdrop" @click.self="closeLearningModal">
+        <section
+          ref="learningModal"
+          class="learning-modal"
+          :class="`learning-modal--${learningModalType}`"
+          role="dialog"
+          aria-modal="true"
+          :aria-labelledby="`learning-modal-${learningModalType}-title`"
+          tabindex="-1"
+          @keydown.esc="closeLearningModal"
+        >
+          <button
+            type="button"
+            class="modal-close"
+            :aria-label="`${learningModalTitle} 팝업 닫기`"
+            @click="closeLearningModal"
+          >
+            <X :size="19" />
+          </button>
+
+          <header class="learning-modal-heading">
+            <span class="learning-modal-icon">
+              <BookCheck v-if="learningModalType === 'term'" :size="23" />
+              <Sparkles v-else :size="23" />
+            </span>
+            <div>
+              <small>LEARNING NOTE</small>
+              <h2 :id="`learning-modal-${learningModalType}-title`">
+                {{ learningModalTitle }}
+                <span>{{ learningModalItems.length }}</span>
+              </h2>
+              <p>
+                {{ learningModalType === 'term'
+                  ? '수업에서 감지한 주요 용어와 설명을 한눈에 확인하세요.'
+                  : '수업에서 설명한 중요한 원리와 관계를 한눈에 확인하세요.' }}
+              </p>
+            </div>
+          </header>
+
+          <div v-if="learningModalItems.length" class="learning-modal-list">
+            <article
+              v-for="(item, index) in learningModalItems"
+              :key="`modal-${learningModalType}-${item.title}-${index}`"
+              class="learning-modal-item"
+            >
+              <h3>{{ item.title }}</h3>
+              <p v-if="item.explanation">{{ item.explanation }}</p>
+            </article>
+          </div>
+          <div v-else class="learning-modal-empty">
+            <strong>아직 감지된 {{ learningModalTitle }}이 없습니다.</strong>
+            <p>수업 내용이 인식되면 이곳에 최신 항목부터 표시됩니다.</p>
+          </div>
+        </section>
+      </div>
+    </Transition>
+
     <Transition name="quiz">
       <div v-if="quizOpen" class="quiz-backdrop" @click.self="closeQuiz">
         <form class="quiz-modal" @submit.prevent="submitQuiz" @keydown.esc="closeQuiz">

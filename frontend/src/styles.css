@@ -1793,6 +1793,49 @@ body.is-resizing-learning-sections {
   flex: 0 0 auto;
 }
 
+.section-heading > .learning-heading-button {
+  display: flex;
+  width: auto;
+  height: 29px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #68453f;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 750;
+  transition: 150ms ease;
+}
+
+.section-heading > .learning-heading-button:hover,
+.section-heading > .learning-heading-button:focus-visible {
+  border-color: #efc7bd;
+  color: var(--brand-dark);
+  background: #fff7f4;
+}
+
+.learning-heading-button > svg:first-child {
+  color: var(--brand);
+}
+
+.learning-heading-button--concept > svg:first-child {
+  color: var(--accent);
+}
+
+.learning-heading-chevron {
+  margin-left: 1px;
+  opacity: 0.55;
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+
+.learning-heading-button:hover .learning-heading-chevron,
+.learning-heading-button:focus-visible .learning-heading-chevron {
+  transform: translateX(2px);
+  opacity: 1;
+}
+
 .learning-section .keyword-list {
   min-height: 0;
   padding-right: 4px;
@@ -2500,6 +2543,159 @@ body.is-resizing-learning-sections {
   overflow-y: auto;
 }
 
+.learning-modal {
+  position: relative;
+  display: flex;
+  width: min(760px, 100%);
+  max-height: calc(100vh - 40px);
+  flex-direction: column;
+  padding: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 22px;
+  outline: 0;
+  background: #fffdfc;
+  box-shadow: 0 28px 80px rgba(45, 12, 17, 0.32);
+  overflow: hidden;
+}
+
+.learning-modal-heading {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 13px;
+  padding-right: 40px;
+}
+
+.learning-modal-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 14px;
+  color: white;
+  background: linear-gradient(145deg, var(--brand), #f04b35);
+  box-shadow: 0 9px 20px rgba(234, 0, 44, 0.18);
+}
+
+.learning-modal--concept .learning-modal-icon {
+  background: linear-gradient(145deg, var(--accent), #e96816);
+  box-shadow: 0 9px 20px rgba(245, 130, 32, 0.2);
+}
+
+.learning-modal-heading small {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: 0.9px;
+}
+
+.learning-modal--concept .learning-modal-heading small {
+  color: #c85c10;
+}
+
+.learning-modal-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #3f2d2b;
+  font-size: 20px;
+  letter-spacing: -0.4px;
+}
+
+.learning-modal-heading h2 span {
+  display: inline-grid;
+  min-width: 23px;
+  height: 23px;
+  padding: 0 6px;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--brand-dark);
+  background: var(--brand-soft);
+  font-size: 10px;
+}
+
+.learning-modal--concept .learning-modal-heading h2 span {
+  color: #a94909;
+  background: var(--accent-soft);
+}
+
+.learning-modal-heading p {
+  margin: 4px 0 0;
+  color: #8a746e;
+  font-size: 11px;
+}
+
+.learning-modal-list {
+  display: grid;
+  min-height: 0;
+  max-height: min(58vh, 560px);
+  margin-top: 23px;
+  padding-right: 5px;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d9c8c3 transparent;
+}
+
+.learning-modal-item {
+  padding: 17px 18px;
+  border: 1px solid #efd5cd;
+  border-radius: 13px;
+  background: #fff8f5;
+}
+
+.learning-modal--concept .learning-modal-item {
+  border-color: #f0d7bc;
+  background: #fff9f1;
+}
+
+.learning-modal-item h3 {
+  margin: 0;
+  color: var(--brand-dark);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.learning-modal--concept .learning-modal-item h3 {
+  color: #ad4e0b;
+}
+
+.learning-modal-item p {
+  margin: 9px 0 0;
+  color: #705b55;
+  font-size: 12.5px;
+  line-height: 1.7;
+  word-break: keep-all;
+}
+
+.learning-modal-empty {
+  display: grid;
+  min-height: 190px;
+  margin-top: 23px;
+  place-content: center;
+  border: 1px dashed #e7c8bf;
+  border-radius: 14px;
+  color: #806a64;
+  background: #fff9f7;
+  text-align: center;
+}
+
+.learning-modal-empty strong {
+  font-size: 13px;
+}
+
+.learning-modal-empty p {
+  margin: 6px 0 0;
+  color: #9c8580;
+  font-size: 10.5px;
+}
+
 .quiz-heading {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr) auto;
@@ -2799,6 +2995,8 @@ body.is-resizing-learning-sections {
 
 .quiz-enter-active .quiz-modal,
 .quiz-leave-active .quiz-modal,
+.quiz-enter-active .learning-modal,
+.quiz-leave-active .learning-modal,
 .quiz-enter-active .quiz-notice-modal,
 .quiz-leave-active .quiz-notice-modal {
   transition: transform 180ms ease, opacity 160ms ease;
@@ -2808,6 +3006,8 @@ body.is-resizing-learning-sections {
 .quiz-leave-to,
 .quiz-enter-from .quiz-modal,
 .quiz-leave-to .quiz-modal,
+.quiz-enter-from .learning-modal,
+.quiz-leave-to .learning-modal,
 .quiz-enter-from .quiz-notice-modal,
 .quiz-leave-to .quiz-notice-modal {
   opacity: 0;
@@ -2815,6 +3015,8 @@ body.is-resizing-learning-sections {
 
 .quiz-enter-from .quiz-modal,
 .quiz-leave-to .quiz-modal,
+.quiz-enter-from .learning-modal,
+.quiz-leave-to .learning-modal,
 .quiz-enter-from .quiz-notice-modal,
 .quiz-leave-to .quiz-notice-modal {
   transform: translateY(10px) scale(0.98);
@@ -2951,6 +3153,13 @@ body.is-resizing-learning-sections {
   .record-button { width: 39px; height: 37px; justify-content: center; padding: 0; }
   .record-button span { display: none; }
   .quiz-modal { padding: 24px 18px 20px; border-radius: 18px; }
+  .learning-modal { padding: 24px 18px 20px; border-radius: 18px; }
+  .learning-modal-heading { grid-template-columns: 42px minmax(0, 1fr); gap: 10px; }
+  .learning-modal-icon { width: 42px; height: 42px; }
+  .learning-modal-heading h2 { font-size: 17px; }
+  .learning-modal-heading p { font-size: 10px; }
+  .learning-modal-list { margin-top: 18px; }
+  .learning-modal-item { padding: 12px 13px; }
   .quiz-heading { grid-template-columns: 40px minmax(0, 1fr); padding-right: 34px; }
   .quiz-icon { width: 40px; height: 40px; }
   .quiz-heading h2 { font-size: 15px; }

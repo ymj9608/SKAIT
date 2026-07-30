@@ -69,9 +69,10 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
 
 
 class SessionRepositoryTests(unittest.TestCase):
-    def test_excess_learning_items_are_compacted_before_storage(self) -> None:
+    def test_all_learning_items_are_preserved_during_storage(self) -> None:
         with TemporaryDirectory() as directory:
-            repository = SessionRepository(Path(directory) / "reclass.sqlite3")
+            database = Path(directory) / "reclass.sqlite3"
+            repository = SessionRepository(database)
             session = sample_session()
             session.material.learning_items = [
                 LearningItem(
@@ -84,10 +85,14 @@ class SessionRepositoryTests(unittest.TestCase):
             saved = repository.save(session)
             restored = repository.get(session.id)
             repository.close()
+            reopened = SessionRepository(database)
+            restored_after_restart = reopened.get(session.id)
+            reopened.close()
 
-            self.assertEqual(len(saved.material.learning_items), 10)
-            self.assertEqual(len(restored.material.learning_items), 10)
-            self.assertEqual(saved.material.learning_items[0].title, "용어 5")
+            self.assertEqual(len(saved.material.learning_items), 15)
+            self.assertEqual(len(restored.material.learning_items), 15)
+            self.assertEqual(len(restored_after_restart.material.learning_items), 15)
+            self.assertEqual(saved.material.learning_items[0].title, "용어 0")
             self.assertLessEqual(len(saved.material.keywords), 6)
 
     def test_stale_background_save_preserves_newer_title_and_quiz(self) -> None:

@@ -32,7 +32,8 @@ SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s+")
 KOREAN_PATTERN = re.compile(r"[가-힣]")
 MAX_KEYWORDS = 6
 MAX_ITEMS_PER_SEGMENT = 1
-MAX_RECENT_LEARNING_ITEMS = 10
+MAX_LEARNING_ITEMS_PER_RESPONSE = 10
+MAX_RECENT_LEARNING_ITEM_TITLES = 10
 MAX_SUMMARY_KEY_POINTS = 3
 PREVIOUS_CONTEXT_SECONDS = 90
 FALLBACK_PREVIOUS_CONTEXT_SEGMENTS = 3
@@ -765,7 +766,7 @@ def summary_topic_quality_score(
 
 def normalize_learning_items(
     payload: dict,
-    limit: int = MAX_RECENT_LEARNING_ITEMS,
+    limit: int = MAX_LEARNING_ITEMS_PER_RESPONSE,
     source_context: str | None = None,
 ) -> list[LearningItem]:
     raw_items = payload.get("learning_items")
@@ -1339,7 +1340,7 @@ def merge_learning_items(
     material: StudyMaterial,
     detected: list[LearningItem],
 ) -> StudyMaterial:
-    """핵심 term/concept를 중복 없이 누적하고 최근 10개만 유지합니다."""
+    """핵심 term/concept를 개수 제한 없이 중복만 제거해 누적합니다."""
     merged = material.model_copy(deep=True)
 
     ordered: dict[str, LearningItem] = {}
@@ -1350,7 +1351,7 @@ def merge_learning_items(
         # 다시 설명된 항목은 최신 설명과 위치를 사용합니다.
         ordered.pop(identity, None)
         ordered[identity] = item
-    merged.learning_items = list(ordered.values())[-MAX_RECENT_LEARNING_ITEMS:]
+    merged.learning_items = list(ordered.values())
     return sync_legacy_keywords(merged)
 
 
@@ -1414,7 +1415,7 @@ def build_learning_item_detection_messages(
     recently_explained_items: list[str] | None = None,
 ) -> list[dict[str, str]]:
     recent_items = json.dumps(
-        (recently_explained_items or [])[-MAX_RECENT_LEARNING_ITEMS:],
+        (recently_explained_items or [])[-MAX_RECENT_LEARNING_ITEM_TITLES:],
         ensure_ascii=False,
     )
     actual_request = f"""Analyze the current Korean STT chunk using the preceding context.

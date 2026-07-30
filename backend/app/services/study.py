@@ -385,6 +385,9 @@ Content policy:
   personal anecdotes, and off-topic conversation unless they contain an explicit instructional claim.
 - Separate distinct topics, but merge repeated explanations of the same idea. Prefer relationships and mechanisms over
   isolated terminology. Do not add generic benefits, examples, or conclusions the lecturer did not state.
+- Write summaries, key points, and explanatory prose in formal Korean written style. Use complete declarative endings
+  such as `~입니다.`, `~합니다.`, and `~됩니다.`. Never imitate conversational lecture endings such as `~죠`,
+  `~네요`, `~거든요`, `~잖아요`, or `~해요`, and never address the learner directly.
 - For learning_items, a `term` is a specialized noun phrase and a `concept` is a difficult relationship, rule, or
   principle expressed as a short Korean proposition. Select only genuine comprehension blockers and never pad the list.
 - When an English technical term or a recognizable Korean phonetic rendering of one appears, write only its canonical
@@ -496,8 +499,12 @@ Rules:
    evidence to support the summary and every key point. Every fact must be supported by CURRENT_TRANSCRIPT; if it
    cannot be supported, omit it.
 9. Terms and difficult concepts are handled by a separate 30-second detector. Do not generate them here.
-10. All learner-facing text must be Korean except canonical technical spellings. Return exactly one JSON object.
-11. Before returning, silently verify that every summary sentence and key point is supported by `evidence`, no fact
+10. Write every `summary` and `key_points` sentence in formal Korean written style, using complete declarative endings
+    such as `~입니다.`, `~합니다.`, and `~됩니다.`. Convert the lecturer's conversational endings such as `~죠`,
+    `~네요`, `~거든요`, `~잖아요`, and `~해요` into formal prose. Do not use rhetorical questions or directly
+    address the learner. Keep `evidence` verbatim even when the quoted lecture itself is conversational.
+11. All learner-facing text must be Korean except canonical technical spellings. Return exactly one JSON object.
+12. Before returning, silently verify that every summary sentence and key point is supported by `evidence`, no fact
     came only from PDF_RAG_CONTEXT or prior knowledge, and no logistical or casual sentence was summarized.
 
 Output schema:
@@ -2617,6 +2624,9 @@ class HuggingFaceStudyAssistant(LocalStudyAssistant):
 
 Requirements:
 - Write summary, key_points, learning-item explanations, and review_questions in Korean.
+- Write summary, key_points, and learning-item explanations in formal Korean written style with complete declarative
+  endings such as `~입니다.`, `~합니다.`, and `~됩니다.`. Do not copy conversational endings such as `~죠`,
+  `~네요`, `~거든요`, `~잖아요`, or `~해요` from the lecturer.
 - Keep the summary within three sentences and key_points within five items.
 - Use only facts directly supported by the transcript for summary and key_points. Do not infer missing reasons,
   advantages, use cases, examples, or features from prior knowledge.

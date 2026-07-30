@@ -42,10 +42,21 @@ python3 open.py
 ## 빠른 사용 및 기능 확인
 
 1. `새 학습 시작`에서 Zoom 또는 YouTube를 선택하고 수업을 만듭니다. PDF 첨부는 선택 사항입니다.
-![사용방법1](docs/images/01.newsection.png)
+
+   <p align="center">
+     <img src="docs/images/사용방법_1.png" alt="새 학습 시작 버튼 선택" width="720">
+   </p>
+
+   <p align="center">
+     <img src="docs/images/사용방법_2.png" alt="수업 유형과 수업명 설정 후 학습 공간 만들기" width="720">
+   </p>
+
 2. `학습 시작`을 누른 뒤 Chrome 공유 창에서 수업 탭과 `탭 오디오 공유`를 선택합니다.
-![사용방법2](docs/images/02.startclick.png)
-![사용방법3](docs/images/03.tapaudio.png)
+
+   <p align="center">
+     <img src="docs/images/사용방법_3.png" alt="수업 탭과 탭 오디오 공유 선택" width="720">
+   </p>
+
 3. 학습이 시작되면 수업 요약, 주요 용어, 중요 개념이 자동으로 정리됩니다.
 4. 요약이 표시되면 `퀴즈 생성`으로 문제를 풀거나 `질문하기`에서 수업 내용을 질문합니다.
 5. 학습을 끝내거나 중지하고 싶으면 `학습 중지`를 누릅니다. `학습 재개`를 눌러 이어서 학습할 수 있습니다.

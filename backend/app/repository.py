@@ -88,6 +88,7 @@ class SessionRepository:
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
                     id TEXT PRIMARY KEY,
+                    session_revision INTEGER NOT NULL DEFAULT 0,
                     title TEXT NOT NULL,
                     title_revision INTEGER NOT NULL DEFAULT 0,
                     summary_notes_revision INTEGER NOT NULL DEFAULT 0,
@@ -191,6 +192,11 @@ class SessionRepository:
                     "ALTER TABLE sessions ADD COLUMN summary_notes_revision "
                     "INTEGER NOT NULL DEFAULT 0"
                 )
+            if "session_revision" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN session_revision "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _import_legacy_json_once(self) -> None:
         if not self.legacy_json_file or not self.legacy_json_file.exists():
@@ -260,11 +266,13 @@ class SessionRepository:
         self._connection.execute(
             """
             INSERT INTO sessions(
-                id, title, title_revision, summary_notes_revision, course_name,
-                source_type, source_url, created_at, status, duration_seconds,
-                reference_name, reference_text, references_json, material_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, session_revision, title, title_revision, summary_notes_revision,
+                course_name, source_type, source_url, created_at, status,
+                duration_seconds, reference_name, reference_text, references_json,
+                material_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                session_revision = excluded.session_revision,
                 title = excluded.title,
                 title_revision = excluded.title_revision,
                 summary_notes_revision = excluded.summary_notes_revision,
@@ -281,6 +289,7 @@ class SessionRepository:
             """,
             (
                 session.id,
+                session.session_revision,
                 session.title,
                 session.title_revision,
                 session.summary_notes_revision,
@@ -377,21 +386,12 @@ class SessionRepository:
             """,
             (row["id"],),
         ).fetchall()
-        chat_rows = self._connection.execute(
-            """
-            SELECT id, role, text, class_context, supplementary_explanation,
-                   knowledge_scope, sources_json, created_at
-            FROM chat_messages
-            WHERE session_id = ?
-            ORDER BY position ASC
-            """,
-            (row["id"],),
-        ).fetchall()
         material_payload = json.loads(row["material_json"])
         self._migrate_material_payload(material_payload, float(row["duration_seconds"]))
         references_payload = json.loads(row["references_json"] or "[]")
         return LectureSession(
             id=row["id"],
+            session_revision=row["session_revision"],
             title=row["title"],
             title_revision=row["title_revision"],
             summary_notes_revision=row["summary_notes_revision"],
@@ -406,20 +406,36 @@ class SessionRepository:
             references=references_payload,
             material=StudyMaterial.model_validate(material_payload),
             segments=[TranscriptSegment.model_validate(dict(item)) for item in segment_rows],
-            chat_messages=[
-                ConversationMessage(
-                    id=item["id"],
-                    role=item["role"],
-                    text=item["text"],
-                    class_context=item["class_context"],
-                    supplementary_explanation=item["supplementary_explanation"],
-                    knowledge_scope=item["knowledge_scope"],
-                    sources=json.loads(item["sources_json"]),
-                    created_at=item["created_at"],
-                )
-                for item in chat_rows
-            ],
+            chat_messages=self._chat_messages_for_session(row["id"]),
         )
+
+    def _chat_messages_for_session(
+        self,
+        session_id: str,
+    ) -> list[ConversationMessage]:
+        rows = self._connection.execute(
+            """
+            SELECT id, role, text, class_context, supplementary_explanation,
+                   knowledge_scope, sources_json, created_at
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY position ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        return [
+            ConversationMessage(
+                id=item["id"],
+                role=item["role"],
+                text=item["text"],
+                class_context=item["class_context"],
+                supplementary_explanation=item["supplementary_explanation"],
+                knowledge_scope=item["knowledge_scope"],
+                sources=json.loads(item["sources_json"]),
+                created_at=item["created_at"],
+            )
+            for item in rows
+        ]
 
     def list(self) -> list[LectureSession]:
         with self._lock:
@@ -440,20 +456,30 @@ class SessionRepository:
         with self._lock, self._connection:
             self._merge_newer_persisted_state(snapshot)
             self._upsert_session(snapshot)
+            # 대화는 append-only 별도 테이블이 원본입니다. 오래 실행된 녹음
+            # 요청의 세션 사본을 반환하더라도 항상 최신 대화를 응답에 담습니다.
+            snapshot.chat_messages = self._chat_messages_for_session(snapshot.id)
         return snapshot.model_copy(deep=True)
 
     def _merge_newer_persisted_state(self, snapshot: LectureSession) -> None:
         """오래 실행된 백그라운드 작업이 최신 사용자 상태를 되돌리지 않게 합니다."""
         row = self._connection.execute(
             """
-            SELECT title, title_revision, summary_notes_revision, material_json
+            SELECT session_revision, title, title_revision,
+                   summary_notes_revision, material_json
             FROM sessions
             WHERE id = ?
             """,
             (snapshot.id,),
         ).fetchone()
         if not row:
+            snapshot.session_revision = max(1, snapshot.session_revision + 1)
             return
+
+        snapshot.session_revision = max(
+            snapshot.session_revision,
+            int(row["session_revision"] or 0),
+        ) + 1
 
         persisted_title_revision = int(row["title_revision"] or 0)
         if persisted_title_revision > snapshot.title_revision:

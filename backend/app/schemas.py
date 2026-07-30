@@ -242,6 +242,7 @@ class ReferenceDocument(BaseModel):
 
 class LectureSession(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
+    session_revision: int = Field(default=0, ge=0)
     title: str = "새 수업"
     title_revision: int = Field(default=0, ge=0, exclude=True)
     summary_notes_revision: int = Field(default=0, ge=0, exclude=True)

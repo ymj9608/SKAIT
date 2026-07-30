@@ -20,6 +20,7 @@ import TranscriptPanel from './components/TranscriptPanel.vue'
 import { useRecorder } from './composables/useRecorder'
 import { api } from './services/api'
 import { getRecordingActionLabel } from './utils/recordingAction'
+import { mergeSessionResponse } from './utils/sessionState'
 import skaitLogo from './assets/brand/skait-logo.png'
 
 const sessions = ref([])
@@ -63,8 +64,9 @@ function replaceSession(session) {
 }
 
 function updateSessionInBackground(session) {
-  if (activeSession.value?.id === session.id) activeSession.value = session
-  upsertSession(session)
+  const mergedSession = mergeSessionResponse(session, activeSession.value)
+  if (activeSession.value?.id === mergedSession.id) activeSession.value = mergedSession
+  upsertSession(mergedSession)
 }
 
 function showToast(message, type = 'error') {

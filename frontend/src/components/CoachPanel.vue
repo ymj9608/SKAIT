@@ -352,7 +352,8 @@ async function sendQuestion(prompt) {
   asking.value = true
   await scrollToBottom()
   try {
-    const result = await api.chat(props.session.id, text, history)
+    const sessionId = props.session.id
+    const result = await api.chat(sessionId, text, history)
     messages.value.push({
       role: 'assistant',
       text: result.answer,
@@ -361,6 +362,11 @@ async function sendQuestion(prompt) {
       knowledgeScope: result.knowledge_scope,
       sources: result.sources,
     })
+    // 채팅 API는 답변만 반환하므로, 별도 테이블에 저장된 최신 대화가
+    // 부모 세션에도 즉시 반영되도록 백그라운드에서 동기화합니다.
+    void api.session(sessionId)
+      .then((session) => emit('updated', session))
+      .catch(() => {})
   } catch (error) {
     userMessage.failed = true
     emit('error', error.message)

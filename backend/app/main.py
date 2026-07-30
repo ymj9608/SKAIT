@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status
@@ -45,6 +46,15 @@ from .services.study import (
 
 settings = get_settings()
 MAX_REFERENCE_DOCUMENTS = 20
+_SESSION_PIPELINE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+@asynccontextmanager
+async def session_pipeline(session_id: str):
+    """같은 수업의 전사·AI·참고 자료 변경은 순서대로 적용합니다."""
+    lock = _SESSION_PIPELINE_LOCKS.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        yield
 
 
 @asynccontextmanager
@@ -425,11 +435,45 @@ async def update_session(session_id: str, payload: SessionUpdate) -> LectureSess
 
 @app.patch("/api/sessions/{session_id}/status", response_model=LectureSession)
 async def update_status(session_id: str, payload: StatusUpdate) -> LectureSession:
-    session = get_session_or_404(session_id)
-    session.status = payload.status
-    if payload.duration_seconds is not None:
-        session.duration_seconds = max(session.duration_seconds, payload.duration_seconds)
-    if payload.status == "completed" and session.segments:
+    async with session_pipeline(session_id):
+        session = get_session_or_404(session_id)
+        session.status = payload.status
+        if payload.duration_seconds is not None:
+            session.duration_seconds = max(session.duration_seconds, payload.duration_seconds)
+        if payload.status == "completed" and session.segments:
+            await process_summary_batches(
+                session,
+                session.duration_seconds,
+                include_partial=True,
+            )
+            await process_learning_item_batches(
+                session,
+                session.duration_seconds,
+                include_partial=True,
+            )
+        return repository().save(session)
+
+
+@app.post("/api/sessions/{session_id}/transcript", response_model=LectureSession)
+async def append_transcript(session_id: str, payload: TranscriptCreate) -> LectureSession:
+    async with session_pipeline(session_id):
+        session = get_session_or_404(session_id)
+        start_seconds = (
+            payload.start_seconds
+            if payload.start_seconds is not None
+            else session.duration_seconds
+        )
+        session.segments.append(
+            TranscriptSegment(
+                start_seconds=start_seconds,
+                speaker=payload.speaker,
+                text=payload.text.strip(),
+                confidence=1,
+            )
+        )
+        # 원문을 먼저 영구 저장한 뒤 30초 탐지와 요약을 실행합니다.
+        session.duration_seconds = max(session.duration_seconds, start_seconds + 1)
+        repository().save(session)
         await process_summary_batches(
             session,
             session.duration_seconds,
@@ -440,39 +484,7 @@ async def update_status(session_id: str, payload: StatusUpdate) -> LectureSessio
             session.duration_seconds,
             include_partial=True,
         )
-    return repository().save(session)
-
-
-@app.post("/api/sessions/{session_id}/transcript", response_model=LectureSession)
-async def append_transcript(session_id: str, payload: TranscriptCreate) -> LectureSession:
-    session = get_session_or_404(session_id)
-    start_seconds = (
-        payload.start_seconds
-        if payload.start_seconds is not None
-        else session.duration_seconds
-    )
-    session.segments.append(
-        TranscriptSegment(
-            start_seconds=start_seconds,
-            speaker=payload.speaker,
-            text=payload.text.strip(),
-            confidence=1,
-        )
-    )
-    # 원문을 먼저 영구 저장한 뒤 30초 탐지와 요약을 실행합니다.
-    session.duration_seconds = max(session.duration_seconds, start_seconds + 1)
-    repository().save(session)
-    await process_summary_batches(
-        session,
-        session.duration_seconds,
-        include_partial=True,
-    )
-    await process_learning_item_batches(
-        session,
-        session.duration_seconds,
-        include_partial=True,
-    )
-    return repository().save(session)
+        return repository().save(session)
 
 
 @app.patch("/api/sessions/{session_id}/transcript", response_model=LectureSession)
@@ -481,16 +493,17 @@ async def update_transcripts(
     payload: TranscriptBatchUpdate,
 ) -> LectureSession:
     """수업 내용을 한 번에 저장하고, AI 노트 갱신은 별도 요청으로 처리합니다."""
-    session = get_session_or_404(session_id)
-    segments_by_id = {segment.id: segment for segment in session.segments}
-    missing_ids = [item.id for item in payload.updates if item.id not in segments_by_id]
-    if missing_ids:
-        raise HTTPException(status_code=404, detail="수정할 수업 내용을 찾을 수 없습니다.")
+    async with session_pipeline(session_id):
+        session = get_session_or_404(session_id)
+        segments_by_id = {segment.id: segment for segment in session.segments}
+        missing_ids = [item.id for item in payload.updates if item.id not in segments_by_id]
+        if missing_ids:
+            raise HTTPException(status_code=404, detail="수정할 수업 내용을 찾을 수 없습니다.")
 
-    for item in payload.updates:
-        segments_by_id[item.id].text = item.text
-        segments_by_id[item.id].is_refined = True
-    return repository().save(session)
+        for item in payload.updates:
+            segments_by_id[item.id].text = item.text
+            segments_by_id[item.id].is_refined = True
+        return repository().save(session)
 
 
 @app.patch(
@@ -502,17 +515,18 @@ async def update_transcript(
     segment_id: str,
     payload: TranscriptUpdate,
 ) -> LectureSession:
-    session = get_session_or_404(session_id)
-    segment = next((item for item in session.segments if item.id == segment_id), None)
-    if segment is None:
-        raise HTTPException(status_code=404, detail="수업 내용을 찾을 수 없습니다.")
-    segment.text = payload.text
-    segment.is_refined = True
-    await rebuild_study_material(session)
-    return repository().save(session)
+    async with session_pipeline(session_id):
+        session = get_session_or_404(session_id)
+        segment = next((item for item in session.segments if item.id == segment_id), None)
+        if segment is None:
+            raise HTTPException(status_code=404, detail="수업 내용을 찾을 수 없습니다.")
+        segment.text = payload.text
+        segment.is_refined = True
+        await rebuild_study_material(session)
+        return repository().save(session)
 
 
-async def attach_reference_pdfs(
+async def _attach_reference_pdfs_locked(
     session_id: str,
     documents: list[UploadFile],
 ) -> LectureSession:
@@ -548,6 +562,14 @@ async def attach_reference_pdfs(
     return repository().save(session)
 
 
+async def attach_reference_pdfs(
+    session_id: str,
+    documents: list[UploadFile],
+) -> LectureSession:
+    async with session_pipeline(session_id):
+        return await _attach_reference_pdfs_locked(session_id, documents)
+
+
 @app.post("/api/sessions/{session_id}/references", response_model=LectureSession)
 async def upload_reference_pdfs(
     session_id: str,
@@ -573,29 +595,31 @@ async def delete_reference_document(
     session_id: str,
     reference_id: str,
 ) -> LectureSession:
-    session = get_session_or_404(session_id)
-    remaining = [
-        reference for reference in session.references if reference.id != reference_id
-    ]
-    if len(remaining) == len(session.references):
-        raise HTTPException(status_code=404, detail="PDF 참고 자료를 찾을 수 없습니다.")
-    session.references = remaining
-    if not remaining:
-        session.reference_name = None
-        session.reference_text = None
-    session.sync_reference_fields()
-    return repository().save(session)
+    async with session_pipeline(session_id):
+        session = get_session_or_404(session_id)
+        remaining = [
+            reference for reference in session.references if reference.id != reference_id
+        ]
+        if len(remaining) == len(session.references):
+            raise HTTPException(status_code=404, detail="PDF 참고 자료를 찾을 수 없습니다.")
+        session.references = remaining
+        if not remaining:
+            session.reference_name = None
+            session.reference_text = None
+        session.sync_reference_fields()
+        return repository().save(session)
 
 
 @app.delete("/api/sessions/{session_id}/reference", response_model=LectureSession)
 async def delete_reference_pdf(session_id: str) -> LectureSession:
     """기존 단일 PDF 삭제 요청은 연결된 자료 전체를 제거합니다."""
-    session = get_session_or_404(session_id)
-    session.references = []
-    session.reference_name = None
-    session.reference_text = None
-    session.sync_reference_fields()
-    return repository().save(session)
+    async with session_pipeline(session_id):
+        session = get_session_or_404(session_id)
+        session.references = []
+        session.reference_name = None
+        session.reference_text = None
+        session.sync_reference_fields()
+        return repository().save(session)
 
 
 @app.post("/api/sessions/{session_id}/audio", response_model=LectureSession)
@@ -604,6 +628,21 @@ async def transcribe_audio(
     audio: UploadFile = File(...),
     start_seconds: float = Form(default=0, ge=0),
     end_seconds: float | None = Form(default=None, ge=0),
+) -> LectureSession:
+    async with session_pipeline(session_id):
+        return await _transcribe_audio_locked(
+            session_id,
+            audio,
+            start_seconds,
+            end_seconds,
+        )
+
+
+async def _transcribe_audio_locked(
+    session_id: str,
+    audio: UploadFile,
+    start_seconds: float,
+    end_seconds: float | None,
 ) -> LectureSession:
     session = get_session_or_404(session_id)
     stt: SpeechToText | None = app.state.stt
@@ -666,13 +705,22 @@ async def transcribe_audio(
 
 @app.post("/api/sessions/{session_id}/summary", response_model=LectureSession)
 async def refresh_summary(session_id: str) -> LectureSession:
-    session = get_session_or_404(session_id)
-    await rebuild_study_material(session)
-    return repository().save(session)
+    async with session_pipeline(session_id):
+        session = get_session_or_404(session_id)
+        await rebuild_study_material(session)
+        return repository().save(session)
 
 
 @app.patch("/api/sessions/{session_id}/summary", response_model=LectureSession)
 async def update_summaries(
+    session_id: str,
+    payload: SummaryBatchUpdate,
+) -> LectureSession:
+    async with session_pipeline(session_id):
+        return await _update_summaries_locked(session_id, payload)
+
+
+async def _update_summaries_locked(
     session_id: str,
     payload: SummaryBatchUpdate,
 ) -> LectureSession:
@@ -792,6 +840,7 @@ async def chat(session_id: str, payload: ChatRequest) -> ChatResponse:
 
 @app.delete("/api/sessions/{session_id}", status_code=204)
 async def delete_session(session_id: str) -> Response:
-    if not repository().delete(session_id):
-        raise HTTPException(status_code=404, detail="학습 세션을 찾을 수 없습니다.")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    async with session_pipeline(session_id):
+        if not repository().delete(session_id):
+            raise HTTPException(status_code=404, detail="학습 세션을 찾을 수 없습니다.")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)

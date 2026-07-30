@@ -240,7 +240,8 @@ class SessionRepositoryTests(unittest.TestCase):
             database = Path(directory) / "reclass.sqlite3"
             session = sample_session()
             repository = SessionRepository(database)
-            repository.save(session)
+            session = repository.save(session)
+            stale_background_snapshot = repository.get(session.id)
             repository.append_chat_messages(
                 session.id,
                 [
@@ -262,14 +263,18 @@ class SessionRepositoryTests(unittest.TestCase):
                 ],
             )
 
-            # 일반 수업 저장은 별도 대화 테이블을 덮어쓰지 않아야 합니다.
-            repository.save(repository.get(session.id))
+            # 대화 생성 전 시작된 백그라운드 저장도 최신 대화를 반환해야 합니다.
+            saved = repository.save(stale_background_snapshot)
             repository.close()
 
             reopened = SessionRepository(database)
             restored = reopened.get(session.id)
             reopened.close()
 
+            self.assertEqual(
+                [message.role for message in saved.chat_messages],
+                ["user", "assistant"],
+            )
             self.assertEqual(
                 [message.role for message in restored.chat_messages],
                 ["user", "assistant"],
@@ -472,14 +477,28 @@ class SessionRepositoryTests(unittest.TestCase):
             original = sample_session()
 
             repository = SessionRepository(database)
-            repository.save(original)
+            saved = repository.save(original)
             repository.close()
 
             reopened = SessionRepository(database)
             restored = reopened.get(original.id)
             reopened.close()
 
-            self.assertEqual(restored, original)
+            self.assertEqual(saved.session_revision, 1)
+            self.assertEqual(restored, saved)
+
+    def test_session_revision_increases_with_every_persisted_update(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = SessionRepository(Path(directory) / "skait.sqlite3")
+            first = repository.save(sample_session())
+            second = repository.save(first)
+            third = repository.save(second)
+            repository.close()
+
+            self.assertEqual(
+                [first.session_revision, second.session_revision, third.session_revision],
+                [1, 2, 3],
+            )
 
     def test_existing_database_adds_optional_pdf_columns_without_data_loss(self) -> None:
         with TemporaryDirectory() as directory:

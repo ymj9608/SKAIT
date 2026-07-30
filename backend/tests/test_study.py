@@ -11,6 +11,7 @@ from app.schemas import (
     SummaryNote,
     SummaryTopic,
     TranscriptSegment,
+    normalize_honorific_prose,
 )
 from app.services.stt import MlxWhisperSpeechToText
 from app.services.study import (
@@ -54,6 +55,44 @@ class StudyServiceTests(unittest.TestCase):
     def test_timestamp(self) -> None:
         self.assertEqual(format_timestamp(125), "02:05")
 
+    def test_generated_prose_uses_formal_polite_korean_endings(self) -> None:
+        self.assertEqual(
+            normalize_honorific_prose("요청 데이터가 검증된다."),
+            "요청 데이터가 검증됩니다.",
+        )
+        self.assertEqual(
+            normalize_honorific_prose("서버가 응답하고 오류를 처리한다."),
+            "서버가 응답하고 오류를 처리합니다.",
+        )
+        self.assertEqual(
+            normalize_honorific_prose("화살표 함수는 자신만의 this를 만들지 않는다"),
+            "화살표 함수는 자신만의 this를 만들지 않습니다",
+        )
+        self.assertEqual(
+            normalize_honorific_prose("각각의 객체인 걸 주셨어요."),
+            "각각의 객체인 걸 주셨습니다.",
+        )
+        self.assertEqual(
+            normalize_honorific_prose("필드로 사용할 때 설정했어요."),
+            "필드로 사용할 때 설정했습니다.",
+        )
+        topic = SummaryTopic(
+            title="요청 처리",
+            summary="요청 데이터가 검증된다.",
+            key_points=["서버가 오류를 처리한다."],
+        )
+        item = LearningItem(
+            type="term",
+            title="Reflection",
+            explanation="실행 중 객체 정보를 확인하는 기술이다.",
+        )
+        self.assertEqual(topic.summary, "요청 데이터가 검증됩니다.")
+        self.assertEqual(topic.key_points, ["서버가 오류를 처리합니다."])
+        self.assertEqual(
+            item.explanation,
+            "실행 중 객체 정보를 확인하는 기술입니다.",
+        )
+
     def test_english_term_title_uses_only_its_canonical_spelling(self) -> None:
         english_term = LearningItem(
             type="term",
@@ -75,7 +114,7 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(korean_term.title, "상관계수")
         self.assertEqual(
             concept.title,
-            "화살표 함수(Arrow Function)는 자신만의 this를 만들지 않는다",
+            "화살표 함수(Arrow Function)는 자신만의 this를 만들지 않습니다",
         )
 
     def test_transcript_refinement_prompt_uses_clean_context(self) -> None:
@@ -156,8 +195,10 @@ class StudyServiceTests(unittest.TestCase):
         self.assertIn("off-topic tangents", messages[0]["content"])
         self.assertIn("at most two", messages[0]["content"])
         self.assertIn("copy one or more exact sentences or clauses", messages[0]["content"])
-        self.assertIn("formal Korean written style", messages[0]["content"])
+        self.assertIn("formal polite Korean", messages[0]["content"])
         self.assertIn("`~입니다.`", messages[0]["content"])
+        self.assertIn("`~된다`", messages[0]["content"])
+        self.assertIn("`~주셨어요`", messages[0]["content"])
         self.assertIn("Keep `evidence` verbatim", messages[0]["content"])
         self.assertIn("silently verify", messages[0]["content"])
         self.assertIn("직전에는 REST API", messages[-1]["content"])
@@ -277,6 +318,21 @@ class StudyServiceTests(unittest.TestCase):
         )
         self.assertTrue(meaningful.has_meaningful_content)
         self.assertEqual(len(meaningful.topics), 2)
+
+        plain_style = batch_summary_from_payload(
+            {
+                "has_meaningful_content": True,
+                "topics": [
+                    {
+                        "title": "요청 처리",
+                        "summary": "요청 데이터가 검증된다.",
+                        "key_points": ["서버가 오류를 처리한다."],
+                    }
+                ],
+            }
+        )
+        self.assertEqual(plain_style.topics[0].summary, "요청 데이터가 검증됩니다.")
+        self.assertEqual(plain_style.topics[0].key_points, ["서버가 오류를 처리합니다."])
 
     def test_batch_payload_requires_exact_evidence_and_removes_ungrounded_points(self) -> None:
         source = (
@@ -694,6 +750,10 @@ class StudyServiceTests(unittest.TestCase):
         self.assertIn("화살표 함수", material.summary)
         self.assertEqual(material.keywords, ["Arrow Function"])
         self.assertEqual(material.learning_items[0].title, "Arrow Function")
+        self.assertEqual(
+            material.learning_items[1].title,
+            "화살표 함수는 자신만의 this를 만들지 않습니다",
+        )
         self.assertIn("자바스크립트", material.keyword_explanations[material.keywords[0]])
         self.assertEqual([item.type for item in material.learning_items], ["term", "concept"])
         self.assertEqual(captured["max_tokens"], 900)

@@ -23,6 +23,7 @@ from ..schemas import (
     SummaryTopic,
     TranscriptSegment,
     canonicalize_term_title,
+    normalize_honorific_prose,
 )
 
 
@@ -248,7 +249,10 @@ Follow these rules:
 9. Exclude pop-culture references, historical trivia, motivational advice, course logistics, and analogies used only
    to make the lecture lively. Do not save a person, character, brand, or example as a learning item.
 10. Select zero or one total item from each roughly 30-second chunk. Most chunks should return no item. Write the
-   explanation in Korean using one or two short sentences for non-majors.
+   explanation in Korean using one or two short sentences for non-majors. Use only formal polite Korean 하십시오체
+   endings such as `~입니다.`, `~합니다.`, and `~됩니다.` in both concept titles and explanations. Never use plain
+   declarative endings such as `~이다`, `~한다`, `~된다`, `~있다`, `~없다`, or `~않는다`, and never use
+   conversational endings such as `~해요`, `~했어요`, or `~주셨어요`.
 11. Include `evidence`, copied exactly from CURRENT_CONTEXT, for the selected item. If no exact supporting clause can
    be copied, return no item. Return one JSON object only, without markdown or commentary.
 
@@ -306,7 +310,7 @@ LEARNING_ITEM_DETECTION_ICL_MESSAGES = [
                 "items": [
                     {
                         "type": "concept",
-                        "title": "화살표 함수는 자신만의 this를 만들지 않는다",
+                        "title": "화살표 함수는 자신만의 this를 만들지 않습니다",
                         "explanation": "화살표 함수 안의 this는 호출 방식으로 새로 정해지지 않고, 함수가 정의된 바깥 범위의 this를 사용합니다.",
                         "evidence": "화살표 함수는 호출될 때 자기만의 this를 새로 만들지 않고 정의된 위치의 this를 사용합니다.",
                     }
@@ -385,9 +389,10 @@ Content policy:
   personal anecdotes, and off-topic conversation unless they contain an explicit instructional claim.
 - Separate distinct topics, but merge repeated explanations of the same idea. Prefer relationships and mechanisms over
   isolated terminology. Do not add generic benefits, examples, or conclusions the lecturer did not state.
-- Write summaries, key points, and explanatory prose in formal Korean written style. Use complete declarative endings
-  such as `~입니다.`, `~합니다.`, and `~됩니다.`. Never imitate conversational lecture endings such as `~죠`,
-  `~네요`, `~거든요`, `~잖아요`, or `~해요`, and never address the learner directly.
+- Write summaries, key points, and explanatory prose only in formal polite Korean 하십시오체. Use complete endings
+  such as `~입니다.`, `~합니다.`, and `~됩니다.`. Never use plain declarative endings such as `~이다`, `~한다`,
+  `~된다`, `~있다`, `~없다`, or `~않는다`; never imitate conversational endings such as `~죠`, `~네요`,
+  `~거든요`, `~잖아요`, `~해요`, `~했어요`, or `~주셨어요`; and never address the learner directly.
 - For learning_items, a `term` is a specialized noun phrase and a `concept` is a difficult relationship, rule, or
   principle expressed as a short Korean proposition. Select only genuine comprehension blockers and never pad the list.
 - When an English technical term or a recognizable Korean phonetic rendering of one appears, write only its canonical
@@ -499,10 +504,12 @@ Rules:
    evidence to support the summary and every key point. Every fact must be supported by CURRENT_TRANSCRIPT; if it
    cannot be supported, omit it.
 9. Terms and difficult concepts are handled by a separate 30-second detector. Do not generate them here.
-10. Write every `summary` and `key_points` sentence in formal Korean written style, using complete declarative endings
-    such as `~입니다.`, `~합니다.`, and `~됩니다.`. Convert the lecturer's conversational endings such as `~죠`,
-    `~네요`, `~거든요`, `~잖아요`, and `~해요` into formal prose. Do not use rhetorical questions or directly
-    address the learner. Keep `evidence` verbatim even when the quoted lecture itself is conversational.
+10. Write every `summary` and `key_points` sentence only in formal polite Korean 하십시오체, using complete endings
+    such as `~입니다.`, `~합니다.`, and `~됩니다.`. Never use plain declarative endings such as `~이다`, `~한다`,
+    `~된다`, `~있다`, `~없다`, or `~않는다`. Convert conversational endings such as `~죠`, `~네요`, `~거든요`,
+    `~잖아요`, `~해요`, `~했어요`, and `~주셨어요` into formal polite prose. Do not use rhetorical questions or
+    directly address the learner.
+    Keep `evidence` verbatim even when the quoted lecture itself is conversational or uses a plain ending.
 11. All learner-facing text must be Korean except canonical technical spellings. Return exactly one JSON object.
 12. Before returning, silently verify that every summary sentence and key point is supported by `evidence`, no fact
     came only from PDF_RAG_CONTEXT or prior knowledge, and no logistical or casual sentence was summarized.
@@ -803,7 +810,11 @@ def normalize_learning_items(
         title = str(candidate.get("title") or candidate.get("term") or "").strip()
         if item_type == "term":
             title = canonicalize_term_title(title)
-        explanation = str(candidate.get("explanation") or "").strip()
+        explanation = normalize_honorific_prose(
+            str(candidate.get("explanation") or "")
+        )
+        if item_type == "concept":
+            title = normalize_honorific_prose(title)
         evidences = evidence_candidates(candidate)
         identity = learning_item_identity(title)
         if (
@@ -848,7 +859,7 @@ def sync_legacy_keywords(material: StudyMaterial) -> StudyMaterial:
 
 def study_material_from_payload(payload: dict) -> StudyMaterial:
     learning_items = normalize_learning_items(payload, MAX_KEYWORDS)
-    summary = str(payload.get("summary") or "").strip()
+    summary = normalize_honorific_prose(str(payload.get("summary") or ""))
     if not summary:
         raise ValueError("summary가 비어 있습니다.")
     raw_key_points = payload.get("key_points")
@@ -856,7 +867,7 @@ def study_material_from_payload(payload: dict) -> StudyMaterial:
     normalized = dict(payload)
     normalized["summary"] = summary
     normalized["key_points"] = [
-        str(item).strip()
+        normalize_honorific_prose(str(item))
         for item in (raw_key_points if isinstance(raw_key_points, list) else [])
         if str(item).strip()
     ][:5]
@@ -888,12 +899,14 @@ def batch_summary_from_payload(
         if not isinstance(candidate, dict):
             continue
         title = str(candidate.get("title") or candidate.get("topic") or "").strip()
-        summary = str(candidate.get("summary") or "").strip()
+        summary = normalize_honorific_prose(
+            str(candidate.get("summary") or "")
+        )
         evidences = evidence_candidates(candidate)
         raw_points = candidate.get("key_points")
         key_points: list[str] = []
         for item in raw_points if isinstance(raw_points, list) else []:
-            point = str(item).strip()[:300]
+            point = normalize_honorific_prose(str(item))[:300]
             if not point:
                 continue
             if source_context and grounding_coverage(point, source_context) < 0.30:
@@ -2158,7 +2171,10 @@ def extractive_summary(segments: list[TranscriptSegment]) -> StudyMaterial:
         scored.append((score, order, sentence))
 
     top = sorted(scored, key=lambda item: (item[0], -item[1]), reverse=True)[:5]
-    key_points = [sentence for _, order, sentence in sorted(top, key=lambda item: item[1])]
+    key_points = [
+        normalize_honorific_prose(sentence)
+        for _, order, sentence in sorted(top, key=lambda item: item[1])
+    ]
     summary = " ".join(key_points[:2])
     if len(summary) > 420:
         summary = summary[:417].rstrip() + "..."
@@ -2376,7 +2392,10 @@ def fallback_batch_summary(segments: list[TranscriptSegment]) -> BatchSummaryRes
             break
     if not selected:
         return BatchSummaryResult()
-    key_points = [sentence for _, sentence in sorted(selected)]
+    key_points = [
+        normalize_honorific_prose(sentence)
+        for _, sentence in sorted(selected)
+    ]
     summary = " ".join(key_points[:2])[:800]
     return BatchSummaryResult(
         has_meaningful_content=True,
@@ -2624,9 +2643,10 @@ class HuggingFaceStudyAssistant(LocalStudyAssistant):
 
 Requirements:
 - Write summary, key_points, learning-item explanations, and review_questions in Korean.
-- Write summary, key_points, and learning-item explanations in formal Korean written style with complete declarative
-  endings such as `~입니다.`, `~합니다.`, and `~됩니다.`. Do not copy conversational endings such as `~죠`,
-  `~네요`, `~거든요`, `~잖아요`, or `~해요` from the lecturer.
+- Write summary, key_points, concept titles, and learning-item explanations only in formal polite Korean 하십시오체,
+  with complete endings such as `~입니다.`, `~합니다.`, and `~됩니다.`. Never use plain declarative endings such
+  as `~이다`, `~한다`, `~된다`, `~있다`, `~없다`, or `~않는다`, and do not copy conversational endings such as
+  `~죠`, `~네요`, `~거든요`, `~잖아요`, `~해요`, `~했어요`, or `~주셨어요` from the lecturer.
 - Keep the summary within three sentences and key_points within five items.
 - Use only facts directly supported by the transcript for summary and key_points. Do not infer missing reasons,
   advantages, use cases, examples, or features from prior knowledge.

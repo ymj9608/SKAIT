@@ -1,17 +1,40 @@
 import asyncio
 import unittest
 
+from pydantic import ValidationError
+
 from app import main
 from app.schemas import (
     BatchSummaryResult,
     LearningItem,
     LectureSession,
+    StatusUpdate,
     SummaryTopic,
     TranscriptSegment,
 )
 
 
 class SummaryBatchingTests(unittest.TestCase):
+    def test_user_summary_interval_is_limited_to_one_through_five_minutes(self) -> None:
+        self.assertEqual(
+            StatusUpdate(
+                status="recording",
+                summary_batch_seconds=60,
+            ).summary_batch_seconds,
+            60,
+        )
+        self.assertEqual(
+            StatusUpdate(
+                status="recording",
+                summary_batch_seconds=300,
+            ).summary_batch_seconds,
+            300,
+        )
+        with self.assertRaises(ValidationError):
+            StatusUpdate(status="recording", summary_batch_seconds=59)
+        with self.assertRaises(ValidationError):
+            StatusUpdate(status="recording", summary_batch_seconds=301)
+
     def test_unrefined_stt_is_never_sent_to_learning_item_detection(self) -> None:
         captured = {}
 
@@ -180,6 +203,55 @@ class SummaryBatchingTests(unittest.TestCase):
             self.assertEqual(calls[1]["recent_topics"], ["첫 번째 주제"])
             self.assertEqual(len(session.material.summary_cards), 1)
             self.assertEqual(session.material.summary_processed_through_seconds, 240)
+        finally:
+            main.app.state.assistant = previous_assistant
+
+    def test_summary_batching_uses_the_user_selected_interval(self) -> None:
+        calls = []
+
+        class FakeAssistant:
+            async def summarize_batch(
+                self,
+                segments,
+                previous_summary="",
+                recent_topics=None,
+            ):
+                calls.append([segment.start_seconds for segment in segments])
+                return BatchSummaryResult()
+
+        session = LectureSession(
+            duration_seconds=120,
+            segments=[
+                TranscriptSegment(start_seconds=0, text="첫 번째 설명입니다."),
+                TranscriptSegment(start_seconds=59, text="첫 구간의 마지막 설명입니다."),
+                TranscriptSegment(start_seconds=60, text="두 번째 구간의 설명입니다."),
+            ],
+        )
+        previous_assistant = getattr(main.app.state, "assistant", None)
+        main.app.state.assistant = FakeAssistant()
+        try:
+            asyncio.run(
+                main.process_summary_batches(session, 59, batch_seconds=60)
+            )
+            self.assertEqual(calls, [])
+
+            asyncio.run(
+                main.process_summary_batches(session, 60, batch_seconds=60)
+            )
+            self.assertEqual(calls, [[0, 59]])
+            self.assertEqual(
+                session.material.summary_processed_through_seconds,
+                60,
+            )
+
+            asyncio.run(
+                main.process_summary_batches(session, 120, batch_seconds=60)
+            )
+            self.assertEqual(calls, [[0, 59], [60]])
+            self.assertEqual(
+                session.material.summary_processed_through_seconds,
+                120,
+            )
         finally:
             main.app.state.assistant = previous_assistant
 

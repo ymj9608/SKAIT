@@ -20,12 +20,20 @@ export function buildVisibleCategoryGroups(
   const sessionsByCategory = new Map()
   const visited = new Set()
   const groups = []
+  const defaultCategoryId = (
+    categories.find((category) => category.is_default)?.id
+    || categories[0]?.id
+    || ''
+  )
 
   sessions.forEach((session) => {
-    if (!session.category_id || !validIds.has(session.category_id)) return
-    const items = sessionsByCategory.get(session.category_id) || []
+    const categoryId = validIds.has(session.category_id)
+      ? session.category_id
+      : defaultCategoryId
+    if (!categoryId) return
+    const items = sessionsByCategory.get(categoryId) || []
     items.push(session)
-    sessionsByCategory.set(session.category_id, items)
+    sessionsByCategory.set(categoryId, items)
   })
   sessionsByCategory.forEach((items) => items.sort(compareSessionOrder))
   categories.forEach((category) => {

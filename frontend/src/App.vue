@@ -16,11 +16,17 @@ import {
   Trash2,
   X,
 } from '@lucide/vue'
+import AppSettingsModal from './components/AppSettingsModal.vue'
 import AppSidebar from './components/AppSidebar.vue'
 import CoachPanel from './components/CoachPanel.vue'
 import TranscriptPanel from './components/TranscriptPanel.vue'
 import { useRecorder } from './composables/useRecorder'
 import { api } from './services/api'
+import {
+  loadAppSettings,
+  resetAppSettings,
+  saveAppSettings,
+} from './utils/appSettings'
 import { getRecordingActionLabel } from './utils/recordingAction'
 import { mergeSessionResponse } from './utils/sessionState'
 import skaitLogo from './assets/brand/skait-logo.png'
@@ -41,6 +47,9 @@ const loading = ref(true)
 const loadFailed = ref(false)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
+const settingsModalOpen = ref(false)
+const appSettings = ref(loadAppSettings())
+const settingsDraft = ref({ ...appSettings.value })
 const createModalOpen = ref(false)
 const newTitle = ref('새 수업')
 const newSourceType = ref('zoom')
@@ -91,7 +100,13 @@ const recorder = useRecorder(
   async (blob, startSeconds, endSeconds) => {
     if (!recordingSessionId.value) return
     updateSessionInBackground(
-      await api.uploadAudio(recordingSessionId.value, blob, startSeconds, endSeconds),
+      await api.uploadAudio(
+        recordingSessionId.value,
+        blob,
+        startSeconds,
+        endSeconds,
+        appSettings.value.summaryBatchSeconds,
+      ),
     )
   },
   async (elapsedSeconds) => finalizeRecording(elapsedSeconds),
@@ -110,8 +125,16 @@ const sessionDate = computed(() => {
   }).format(new Date(activeSession.value.created_at))
 })
 
+const defaultCategory = computed(() => (
+  categories.value.find((category) => category.is_default)
+  || categories.value[0]
+  || null
+))
+
 const activeCategoryName = computed(() => (
-  categoryPath(activeSession.value?.category_id) || '내 학습'
+  categoryPath(activeSession.value?.category_id)
+  || defaultCategory.value?.name
+  || '내 수업'
 ))
 
 const categoryOptions = computed(() => categories.value.map((category) => ({
@@ -140,6 +163,53 @@ const recordingActionLabel = computed(() => (
 const activeSessionIsBeingRecorded = computed(() => (
   Boolean(recordingSessionId.value && activeSession.value?.id === recordingSessionId.value)
 ))
+
+const previewSettings = computed(() => (
+  settingsModalOpen.value ? settingsDraft.value : appSettings.value
+))
+
+const appShellStyle = computed(() => ({
+  '--user-title-font-size': `${previewSettings.value.fontSize}pt`,
+}))
+
+watch(
+  previewSettings,
+  (value) => {
+    document.documentElement.style.setProperty(
+      '--user-title-font-size',
+      `${value.fontSize}pt`,
+    )
+  },
+  { deep: true, immediate: true },
+)
+
+function openSettingsModal() {
+  settingsDraft.value = { ...appSettings.value }
+  settingsModalOpen.value = true
+  sidebarOpen.value = false
+}
+
+function updateSettingsDraft({ key, value }) {
+  settingsDraft.value = {
+    ...settingsDraft.value,
+    [key]: value,
+  }
+}
+
+function resetSettingsDraft() {
+  settingsDraft.value = resetAppSettings()
+}
+
+function cancelSettings() {
+  settingsDraft.value = { ...appSettings.value }
+  settingsModalOpen.value = false
+}
+
+function saveSettings() {
+  appSettings.value = saveAppSettings(settingsDraft.value)
+  settingsDraft.value = { ...appSettings.value }
+  settingsModalOpen.value = false
+}
 
 async function loadApp() {
   loading.value = true
@@ -189,7 +259,7 @@ async function moveSession({ id, categoryId, sortOrder }) {
       sort_order: sortOrder,
     }))
     const categoryName = categories.value.find((category) => category.id === categoryId)?.name
-    showToast(categoryName ? `“${categoryName}” 카테고리로 옮겼습니다.` : '최상위로 옮겼습니다.', 'success')
+    showToast(`“${categoryName || defaultCategory.value?.name || '내 수업'}” 레포지토리로 옮겼습니다.`, 'success')
   } catch (error) {
     showToast(error.message)
   }
@@ -201,9 +271,9 @@ async function createCategory({ name, parentId = null, sessionId = '' }) {
     categories.value.push(category)
     if (sessionId) {
       updateSessionInBackground(await api.updateSession(sessionId, { category_id: category.id }))
-      showToast(`“${category.name}” 카테고리를 만들고 수업을 옮겼습니다.`, 'success')
+      showToast(`“${category.name}” 레포지토리를 만들고 수업을 옮겼습니다.`, 'success')
     } else {
-      showToast(`“${category.name}” 카테고리를 만들었습니다.`, 'success')
+      showToast(`“${category.name}” 레포지토리를 만들었습니다.`, 'success')
     }
     return category
   } catch (error) {
@@ -217,7 +287,7 @@ async function renameCategory({ id, name }) {
     const category = await api.updateCategory(id, { name })
     const index = categories.value.findIndex((item) => item.id === id)
     if (index >= 0) categories.value.splice(index, 1, category)
-    showToast('카테고리 이름을 변경했습니다.', 'success')
+    showToast('레포지토리 이름을 변경했습니다.', 'success')
   } catch (error) {
     showToast(error.message)
   }
@@ -227,6 +297,11 @@ async function removeCategory(id) {
   try {
     const removedCategory = categories.value.find((category) => category.id === id)
     await api.deleteCategory(id)
+    const destinationId = (
+      removedCategory?.parent_id
+      || defaultCategory.value?.id
+      || ''
+    )
     categories.value = categories.value
       .filter((category) => category.id !== id)
       .map((category) => (
@@ -238,7 +313,7 @@ async function removeCategory(id) {
       session.category_id === id
         ? {
             ...session,
-            category_id: removedCategory?.parent_id || null,
+            category_id: destinationId,
             session_revision: (session.session_revision || 0) + 1,
           }
         : session
@@ -246,14 +321,12 @@ async function removeCategory(id) {
     if (activeSession.value?.category_id === id) {
       activeSession.value = {
         ...activeSession.value,
-        category_id: removedCategory?.parent_id || null,
+        category_id: destinationId,
         session_revision: (activeSession.value.session_revision || 0) + 1,
       }
     }
-    const destinationName = removedCategory?.parent_id
-      ? categoryPath(removedCategory.parent_id)
-      : '최상위'
-    showToast(`카테고리를 삭제하고 수업은 “${destinationName}”으로 옮겼습니다.`, 'success')
+    const destinationName = categoryPath(destinationId) || '내 수업'
+    showToast(`레포지토리를 삭제하고 수업은 “${destinationName}”으로 옮겼습니다.`, 'success')
   } catch (error) {
     showToast(error.message)
   }
@@ -278,7 +351,7 @@ async function removeSession(id) {
 function openCreateModal() {
   newTitle.value = '새 수업'
   newSourceType.value = 'zoom'
-  newCategoryId.value = ''
+  newCategoryId.value = defaultCategory.value?.id || ''
   newCategoryName.value = ''
   newCategoryParentId.value = ''
   newCategoryInputOpen.value = false
@@ -394,7 +467,7 @@ async function createSession() {
     let referenceConnected = false
     let session = await api.createSession({
       title: newTitle.value.trim(),
-      category_id: newCategoryId.value || null,
+      category_id: newCategoryId.value || defaultCategory.value?.id,
       course_name: newSourceType.value === 'youtube' ? 'YouTube' : 'Zoom',
       source_type: newSourceType.value,
     })
@@ -433,6 +506,7 @@ async function finalizeRecording(elapsedSeconds) {
       const session = await api.updateStatus(sessionId, {
         status: 'completed',
         duration_seconds: elapsedSeconds,
+        summary_batch_seconds: appSettings.value.summaryBatchSeconds,
       })
       updateSessionInBackground(session)
       showToast('실시간 변환과 최종 AI 노트 정리가 완료되었습니다.', 'success')
@@ -476,6 +550,7 @@ async function toggleRecording() {
       await api.updateStatus(sessionId, {
         status: 'recording',
         duration_seconds: initialDuration,
+        summary_batch_seconds: appSettings.value.summaryBatchSeconds,
       }),
     )
   } catch (error) {
@@ -518,7 +593,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'app-shell--sidebar-collapsed': sidebarCollapsed }">
+  <div
+    class="app-shell"
+    :class="{ 'app-shell--sidebar-collapsed': sidebarCollapsed }"
+    :style="appShellStyle"
+  >
     <AppSidebar
       :sessions="sessions"
       :categories="categories"
@@ -532,6 +611,7 @@ onMounted(async () => {
       @create-category="createCategory"
       @rename-category="renameCategory"
       @delete-category="removeCategory"
+      @settings="openSettingsModal"
       @close="sidebarOpen = false"
       @collapse="sidebarCollapsed = true"
     />
@@ -656,6 +736,16 @@ onMounted(async () => {
     </div>
 
     <Teleport to="body">
+      <AppSettingsModal
+        v-if="settingsModalOpen"
+        :settings="settingsDraft"
+        @cancel="cancelSettings"
+        @close="cancelSettings"
+        @reset-display="resetSettingsDraft"
+        @save="saveSettings"
+        @update="updateSettingsDraft"
+      />
+
       <div v-if="createModalOpen" class="modal-backdrop" @click.self="createModalOpen = false">
         <form class="create-modal" @submit.prevent="createSession">
           <button type="button" class="modal-close" aria-label="닫기" @click="createModalOpen = false"><X :size="20" /></button>
@@ -672,19 +762,18 @@ onMounted(async () => {
             <input v-model="newTitle" maxlength="100" autofocus placeholder="예: Spring Security 기초" />
           </label>
           <div class="category-select-label">
-            <span>카테고리 <small>선택 사항</small></span>
+            <span>레포지토리</span>
             <div class="category-picker-row">
-              <select v-model="newCategoryId" aria-label="카테고리 선택">
-                <option value="">최상위</option>
+              <select v-model="newCategoryId" aria-label="레포지토리 선택" required>
                 <option v-for="category in categoryOptions" :key="category.id" :value="category.id">{{ category.path }}</option>
               </select>
               <button type="button" class="new-category-inline-toggle" @click="toggleNewCategoryInput">
-                <Plus :size="15" /> 새 카테고리
+                <Plus :size="15" /> 새 레포지토리
               </button>
             </div>
             <div v-if="newCategoryInputOpen" class="new-category-inline">
-              <select v-model="newCategoryParentId" aria-label="새 카테고리의 상위 카테고리">
-                <option value="">최상위 카테고리로 만들기</option>
+              <select v-model="newCategoryParentId" aria-label="새 레포지토리의 상위 레포지토리">
+                <option value="">독립 레포지토리로 만들기</option>
                 <option v-for="category in categoryOptions" :key="category.id" :value="category.id">
                   {{ category.path }} 아래에 만들기
                 </option>

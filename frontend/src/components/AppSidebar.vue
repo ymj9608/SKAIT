@@ -13,6 +13,7 @@ import {
   PanelLeft,
   Pencil,
   Plus,
+  Settings,
   Sparkles,
   Trash2,
   X,
@@ -42,6 +43,7 @@ const emit = defineEmits([
   'create-category',
   'rename-category',
   'delete-category',
+  'settings',
 ])
 const activeMenuId = ref('')
 const activeCategoryMenuId = ref('')
@@ -50,6 +52,74 @@ const categoryEditor = ref(null)
 const draggedSessionId = ref('')
 const dropTargetCategoryId = ref('')
 const sessionDropTarget = ref(null)
+const sidebarWidth = ref(268)
+const resizingSidebar = ref(false)
+const viewportWidth = ref(window.innerWidth)
+
+const SIDEBAR_WIDTH_STORAGE_KEY = 'skait-sidebar-width'
+const MIN_SIDEBAR_WIDTH = 220
+const DEFAULT_SIDEBAR_WIDTH = 268
+const maxSidebarWidth = computed(() => (
+  Math.max(MIN_SIDEBAR_WIDTH, Math.floor(viewportWidth.value / 3))
+))
+
+let resizeStartX = 0
+let resizeStartWidth = DEFAULT_SIDEBAR_WIDTH
+
+function allowedSidebarWidth(width) {
+  return Math.min(maxSidebarWidth.value, Math.max(MIN_SIDEBAR_WIDTH, width))
+}
+
+function saveSidebarWidth() {
+  localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(Math.round(sidebarWidth.value)))
+}
+
+function resizeSidebar(event) {
+  sidebarWidth.value = allowedSidebarWidth(
+    resizeStartWidth + event.clientX - resizeStartX,
+  )
+}
+
+function stopSidebarResize() {
+  if (!resizingSidebar.value) return
+  resizingSidebar.value = false
+  document.body.classList.remove('is-resizing-sidebar')
+  window.removeEventListener('pointermove', resizeSidebar)
+  window.removeEventListener('pointerup', stopSidebarResize)
+  window.removeEventListener('pointercancel', stopSidebarResize)
+  saveSidebarWidth()
+}
+
+function startSidebarResize(event) {
+  if (window.innerWidth <= 920) return
+  event.preventDefault()
+  resizeStartX = event.clientX
+  resizeStartWidth = sidebarWidth.value
+  resizingSidebar.value = true
+  document.body.classList.add('is-resizing-sidebar')
+  window.addEventListener('pointermove', resizeSidebar)
+  window.addEventListener('pointerup', stopSidebarResize)
+  window.addEventListener('pointercancel', stopSidebarResize)
+}
+
+function adjustSidebarWidth(change) {
+  sidebarWidth.value = allowedSidebarWidth(sidebarWidth.value + change)
+  saveSidebarWidth()
+}
+
+function resetSidebarWidth() {
+  sidebarWidth.value = allowedSidebarWidth(DEFAULT_SIDEBAR_WIDTH)
+  saveSidebarWidth()
+}
+
+function fitSidebarWidthToViewport() {
+  viewportWidth.value = window.innerWidth
+  if (window.innerWidth <= 920) return
+  const fittedWidth = allowedSidebarWidth(sidebarWidth.value)
+  if (fittedWidth === sidebarWidth.value) return
+  sidebarWidth.value = fittedWidth
+  saveSidebarWidth()
+}
 
 const categoryById = computed(() => new Map(
   props.categories.map((category) => [category.id, category]),
@@ -67,11 +137,11 @@ const visibleCategoryGroups = computed(() => buildVisibleCategoryGroups(
   collapsedGroupIds.value,
 ))
 
-const rootSessions = computed(() => {
-  return props.sessions.filter((session) => (
-    normalizedCategoryId(session) === null
-  )).sort(compareSessionOrder)
-})
+const defaultCategory = computed(() => (
+  props.categories.find((category) => category.is_default)
+  || props.categories[0]
+  || null
+))
 
 function selectSession(id) {
   closeMenu()
@@ -169,7 +239,7 @@ function sessionsInCategory(categoryId) {
 function normalizedCategoryId(session) {
   return session.category_id && categoryById.value.has(session.category_id)
     ? session.category_id
-    : null
+    : defaultCategory.value?.id || null
 }
 
 function sessionSortOrder(session) {
@@ -273,12 +343,48 @@ function closeMenu() {
   activeCategoryMenuId.value = ''
 }
 
-onMounted(() => document.addEventListener('click', closeMenu))
-onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
+onMounted(() => {
+  document.addEventListener('click', closeMenu)
+  const savedWidth = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+  if (Number.isFinite(savedWidth) && savedWidth > 0) {
+    sidebarWidth.value = allowedSidebarWidth(savedWidth)
+  }
+  window.addEventListener('resize', fitSidebarWidthToViewport)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', closeMenu)
+  window.removeEventListener('resize', fitSidebarWidthToViewport)
+  stopSidebarResize()
+})
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ 'sidebar--open': open }">
+  <aside
+    class="sidebar"
+    :class="{
+      'sidebar--open': open,
+      'sidebar--resizing': resizingSidebar,
+    }"
+    :style="{ '--sidebar-width': `${sidebarWidth}px` }"
+  >
+    <button
+      type="button"
+      class="sidebar-resizer"
+      role="separator"
+      aria-label="사이드바 너비 조절"
+      aria-orientation="vertical"
+      :aria-valuemin="MIN_SIDEBAR_WIDTH"
+      :aria-valuemax="maxSidebarWidth"
+      :aria-valuenow="Math.round(sidebarWidth)"
+      title="드래그하여 너비 조절 · 더블 클릭하여 초기화"
+      @pointerdown="startSidebarResize"
+      @dblclick="resetSidebarWidth"
+      @keydown.left.prevent="adjustSidebarWidth(-10)"
+      @keydown.right.prevent="adjustSidebarWidth(10)"
+      @keydown.home.prevent="resetSidebarWidth"
+    />
+
     <div class="brand-row">
       <button class="brand" aria-label="SKAIT 홈">
         <img class="brand-logo" :src="skaitLogo" alt="" />
@@ -294,14 +400,7 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
       </div>
     </div>
 
-    <div
-      class="sidebar-label"
-      :class="{ 'sidebar-label--drop-target': dropTargetCategoryId === 'root' }"
-      @dragenter.prevent="dragOverCategory(null)"
-      @dragover.prevent="dragOverCategory(null)"
-      @dragleave="leaveCategoryDropTarget($event, null)"
-      @drop.prevent="dropSession($event, null)"
-    >
+    <div class="sidebar-label">
       <span>내 학습</span>
       <div class="sidebar-label-actions">
         <button aria-label="새 학습 시작" data-tooltip="새 학습 시작" @click="emit('new')">
@@ -310,13 +409,13 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
             <Plus class="new-study-icon-plus" :size="9" stroke-width="2.8" />
           </span>
         </button>
-        <button aria-label="카테고리 만들기" data-tooltip="카테고리 만들기" @click.stop="openCategoryEditor()">
+        <button aria-label="레포지토리 만들기" data-tooltip="레포지토리 만들기" @click.stop="openCategoryEditor()">
           <FolderPlus :size="17" stroke-width="1.9" />
         </button>
       </div>
     </div>
 
-    <nav class="session-list category-tree" aria-label="카테고리별 학습 세션 목록">
+    <nav class="session-list category-tree" aria-label="레포지토리별 학습 세션 목록">
       <section
         v-for="group in visibleCategoryGroups"
         :key="group.id"
@@ -343,16 +442,16 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
           </button>
           <button
             class="category-menu-button"
-            :aria-label="`${group.name} 카테고리 메뉴`"
+            :aria-label="`${group.name} 레포지토리 메뉴`"
             :aria-expanded="activeCategoryMenuId === group.id"
             @click.stop="toggleCategoryMenu(group.id)"
           >
             <EllipsisVertical :size="16" />
           </button>
           <div v-if="activeCategoryMenuId === group.id" class="session-menu category-menu" @click.stop>
-            <button @click="openCategoryEditor({ parentId: group.id })"><FolderPlus :size="14" /> 하위 카테고리</button>
+            <button @click="openCategoryEditor({ parentId: group.id })"><FolderPlus :size="14" /> 하위 레포지토리</button>
             <button @click="renameCategory(group)"><Pencil :size="14" /> 이름 변경</button>
-            <button class="session-menu-delete" @click="deleteCategory(group)"><Trash2 :size="14" /> 카테고리 삭제</button>
+            <button v-if="!group.is_default" class="session-menu-delete" @click="deleteCategory(group)"><Trash2 :size="14" /> 레포지토리 삭제</button>
           </div>
         </div>
 
@@ -396,48 +495,17 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
         </div>
       </section>
 
-      <div
-        v-for="session in rootSessions"
-        :key="session.id"
-        class="session-entry session-entry--root"
-        :class="{
-          'session-entry--active': session.id === activeId,
-          'session-entry--dragging': session.id === draggedSessionId,
-          'session-entry--drop-before': sessionDropTarget?.id === session.id && sessionDropTarget.position === 'before',
-          'session-entry--drop-after': sessionDropTarget?.id === session.id && sessionDropTarget.position === 'after',
-        }"
-        :draggable="true"
-        @dragstart="startSessionDrag($event, session.id)"
-        @dragend="endSessionDrag"
-        @dragenter.prevent.stop="dragOverSession($event, session)"
-        @dragover.prevent.stop="dragOverSession($event, session)"
-        @dragleave.stop="leaveSessionDropTarget($event, session.id)"
-        @drop.prevent.stop="dropSessionBeside($event, session)"
-      >
-        <button class="session-item" :title="session.title" @click="selectSession(session.id)">
-          <GripVertical class="session-drag-handle" :size="13" title="드래그해서 순서 또는 폴더 이동" />
-          <strong>{{ session.title }}</strong>
-        </button>
-        <button
-          class="session-menu-button"
-          :aria-label="`${session.title} 메뉴`"
-          :aria-expanded="activeMenuId === session.id"
-          @click.stop="toggleSessionMenu(session.id)"
-        >
-          <EllipsisVertical :size="17" />
-        </button>
-        <div v-if="activeMenuId === session.id" class="session-menu" @click.stop>
-          <button @click="renameSession(session)"><Pencil :size="14" /> 제목 수정</button>
-          <button class="session-menu-delete" @click="deleteSession(session)"><Trash2 :size="14" /> 삭제</button>
-        </div>
-      </div>
-
       <div v-if="!sessions.length" class="sidebar-empty">
         <Sparkles :size="20" />
         첫 학습을 시작해 보세요.
       </div>
     </nav>
 
+    <div class="sidebar-footer">
+      <button type="button" class="sidebar-settings-button" @click="emit('settings')">
+        <Settings :size="17" /> 설정
+      </button>
+    </div>
   </aside>
   <button v-if="open" class="sidebar-backdrop" aria-label="메뉴 닫기" @click="emit('close')" />
 
@@ -458,29 +526,29 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
         </span>
         <h2>
           {{ categoryEditor.mode === 'rename'
-            ? '카테고리 이름 변경'
+            ? '레포지토리 이름 변경'
             : categoryEditor.mode === 'delete'
-              ? '카테고리 삭제'
+              ? '레포지토리 삭제'
               : categoryEditor.parentId
-                ? '하위 카테고리 만들기'
-                : '카테고리 만들기' }}
+                ? '하위 레포지토리 만들기'
+                : '레포지토리 만들기' }}
         </h2>
         <template v-if="categoryEditor.mode === 'delete'">
           <p class="category-editor-description">
-            “{{ categoryEditor.name }}” 카테고리를 삭제할까요? 이 카테고리의 수업은
-            ‘{{ categoryEditor.parentId ? categoryPath(categoryEditor.parentId) : '최상위' }}’로 이동하고,
-            하위 카테고리는 한 단계 위로 이동합니다.
+            “{{ categoryEditor.name }}” 레포지토리를 삭제할까요? 이 레포지토리의 수업은
+            ‘{{ categoryEditor.parentId ? categoryPath(categoryEditor.parentId) : defaultCategory?.name || '내 수업' }}’로 이동하고,
+            하위 레포지토리는 한 단계 위로 이동합니다.
           </p>
         </template>
         <template v-else>
           <label>
-            <span>카테고리 이름</span>
+            <span>레포지토리 이름</span>
             <input v-model="categoryEditor.name" maxlength="40" autofocus placeholder="예: 백엔드 개발" />
           </label>
           <label v-if="categoryEditor.mode === 'create'">
-            <span>상위 카테고리</span>
+            <span>상위 레포지토리</span>
             <select v-model="categoryEditor.parentId">
-              <option value="">최상위</option>
+              <option value="">독립 레포지토리</option>
               <option v-for="category in categoryOptions" :key="category.id" :value="category.id">
                 {{ category.path }}
               </option>

@@ -18,6 +18,8 @@ LEGACY_IMPORT_MARKER = "legacy_json_import_v1"
 TRANSCRIPT_REFINEMENT_VERSION = 1
 MAX_STORED_KEYWORDS = 6
 LEGACY_DATABASE_FILENAME = "reclass.sqlite3"
+DEFAULT_CATEGORY_ID = "default-my-lessons"
+DEFAULT_CATEGORY_NAME = "내 수업"
 
 
 def migrate_legacy_database(
@@ -81,6 +83,7 @@ class SessionRepository:
         self._connection.execute("PRAGMA busy_timeout = 5000")
         try:
             self._create_schema()
+            self._ensure_default_category()
             self._import_legacy_json_once()
             self._compact_persisted_legacy_keywords()
         except Exception:
@@ -139,6 +142,7 @@ class SessionRepository:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL COLLATE NOCASE UNIQUE,
                     parent_id TEXT,
+                    is_default INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
 
@@ -256,10 +260,108 @@ class SessionRepository:
                 self._connection.execute(
                     "ALTER TABLE categories ADD COLUMN parent_id TEXT"
                 )
+            if "is_default" not in category_columns:
+                self._connection.execute(
+                    "ALTER TABLE categories ADD COLUMN is_default "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
             self._connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_categories_parent_created_at "
                 "ON categories(parent_id, created_at ASC)"
             )
+
+    def _ensure_default_category(self) -> None:
+        """기본 레포지토리를 만들고 모든 기존 수업을 유효한 레포지토리에 배치합니다."""
+        with self._lock, self._connection:
+            named = self._connection.execute(
+                """
+                SELECT id
+                FROM categories
+                WHERE name = ? COLLATE NOCASE
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (DEFAULT_CATEGORY_NAME,),
+            ).fetchone()
+            marked = self._connection.execute(
+                """
+                SELECT id
+                FROM categories
+                WHERE is_default = 1
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+
+            if marked:
+                default_category_id = str(marked["id"])
+            elif named:
+                default_category_id = str(named["id"])
+            else:
+                default_category_id = DEFAULT_CATEGORY_ID
+                if self._connection.execute(
+                    "SELECT 1 FROM categories WHERE id = ?",
+                    (default_category_id,),
+                ).fetchone():
+                    default_category_id = StudyCategory(
+                        name=DEFAULT_CATEGORY_NAME
+                    ).id
+                default_category = StudyCategory(
+                    id=default_category_id,
+                    name=DEFAULT_CATEGORY_NAME,
+                    is_default=True,
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO categories(
+                        id, name, parent_id, is_default, created_at
+                    ) VALUES (?, ?, NULL, 1, ?)
+                    """,
+                    (
+                        default_category.id,
+                        default_category.name,
+                        default_category.created_at.isoformat(),
+                    ),
+                )
+
+            self._connection.execute(
+                "UPDATE categories SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END",
+                (default_category_id,),
+            )
+            self._connection.execute(
+                "UPDATE categories SET parent_id = NULL WHERE id = ?",
+                (default_category_id,),
+            )
+            self._connection.execute(
+                """
+                UPDATE sessions
+                SET category_id = ?,
+                    category_revision = category_revision + 1,
+                    organization_revision = organization_revision + 1,
+                    session_revision = session_revision + 1
+                WHERE category_id IS NULL
+                   OR NOT EXISTS (
+                       SELECT 1
+                       FROM categories
+                       WHERE categories.id = sessions.category_id
+                   )
+                """,
+                (default_category_id,),
+            )
+
+    def default_category(self) -> StudyCategory:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT id, name, parent_id, is_default, created_at
+                FROM categories
+                WHERE is_default = 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                raise RuntimeError("기본 '내 수업' 레포지토리를 찾을 수 없습니다.")
+            return StudyCategory.model_validate(dict(row))
 
     def _import_legacy_json_once(self) -> None:
         if not self.legacy_json_file or not self.legacy_json_file.exists():
@@ -313,12 +415,15 @@ class SessionRepository:
 
     def _upsert_session(self, session: LectureSession) -> None:
         session.sync_reference_fields()
-        if session.category_id:
-            category_exists = self._connection.execute(
+        category_exists = (
+            self._connection.execute(
                 "SELECT 1 FROM categories WHERE id = ?", (session.category_id,)
             ).fetchone()
-            if not category_exists:
-                session.category_id = None
+            if session.category_id
+            else None
+        )
+        if not category_exists:
+            session.category_id = self.default_category().id
         self._compact_legacy_keywords(session.material)
         references_json = json.dumps(
             [
@@ -536,6 +641,11 @@ class SessionRepository:
     def save(self, session: LectureSession) -> LectureSession:
         snapshot = session.model_copy(deep=True)
         with self._lock, self._connection:
+            if not snapshot.category_id or not self._connection.execute(
+                "SELECT 1 FROM categories WHERE id = ?",
+                (snapshot.category_id,),
+            ).fetchone():
+                snapshot.category_id = self.default_category().id
             self._merge_newer_persisted_state(snapshot)
             self._upsert_session(snapshot)
             # 대화는 append-only 별도 테이블이 원본입니다. 오래 실행된 녹음
@@ -665,21 +775,23 @@ class SessionRepository:
     def list_categories(self) -> list[StudyCategory]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT id, name, parent_id, created_at "
-                "FROM categories ORDER BY created_at ASC"
+                "SELECT id, name, parent_id, is_default, created_at "
+                "FROM categories ORDER BY is_default DESC, created_at ASC"
             ).fetchall()
             return [StudyCategory.model_validate(dict(row)) for row in rows]
 
     def get_category(self, category_id: str) -> StudyCategory | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT id, name, parent_id, created_at FROM categories WHERE id = ?",
+                "SELECT id, name, parent_id, is_default, created_at "
+                "FROM categories WHERE id = ?",
                 (category_id,),
             ).fetchone()
             return StudyCategory.model_validate(dict(row)) if row else None
 
     def create_category(self, category: StudyCategory) -> StudyCategory:
         snapshot = category.model_copy(deep=True)
+        snapshot.is_default = False
         with self._lock, self._connection:
             if snapshot.parent_id:
                 parent_exists = self._connection.execute(
@@ -688,8 +800,11 @@ class SessionRepository:
                 if not parent_exists:
                     raise ValueError("상위 카테고리를 찾을 수 없습니다.")
             self._connection.execute(
-                "INSERT INTO categories(id, name, parent_id, created_at) "
-                "VALUES (?, ?, ?, ?)",
+                """
+                INSERT INTO categories(
+                    id, name, parent_id, is_default, created_at
+                ) VALUES (?, ?, ?, 0, ?)
+                """,
                 (
                     snapshot.id,
                     snapshot.name,
@@ -701,6 +816,12 @@ class SessionRepository:
 
     def update_category(self, category_id: str, name: str) -> StudyCategory | None:
         with self._lock, self._connection:
+            category = self._connection.execute(
+                "SELECT 1 FROM categories WHERE id = ?",
+                (category_id,),
+            ).fetchone()
+            if not category:
+                return None
             cursor = self._connection.execute(
                 "UPDATE categories SET name = ? WHERE id = ?",
                 (name, category_id),
@@ -708,7 +829,8 @@ class SessionRepository:
             if cursor.rowcount == 0:
                 return None
             row = self._connection.execute(
-                "SELECT id, name, parent_id, created_at FROM categories WHERE id = ?",
+                "SELECT id, name, parent_id, is_default, created_at "
+                "FROM categories WHERE id = ?",
                 (category_id,),
             ).fetchone()
         return StudyCategory.model_validate(dict(row))
@@ -716,10 +838,14 @@ class SessionRepository:
     def delete_category(self, category_id: str) -> bool:
         with self._lock, self._connection:
             category = self._connection.execute(
-                "SELECT parent_id FROM categories WHERE id = ?", (category_id,)
+                "SELECT parent_id, is_default FROM categories WHERE id = ?",
+                (category_id,),
             ).fetchone()
             if not category:
                 return False
+            if category["is_default"]:
+                raise ValueError("기본 '내 수업' 레포지토리는 삭제할 수 없습니다.")
+            destination_id = category["parent_id"] or self.default_category().id
             self._connection.execute(
                 "UPDATE categories SET parent_id = ? WHERE parent_id = ?",
                 (category["parent_id"], category_id),
@@ -733,7 +859,7 @@ class SessionRepository:
                     session_revision = session_revision + 1
                 WHERE category_id = ?
                 """,
-                (category["parent_id"], category_id),
+                (destination_id, category_id),
             )
             self._connection.execute(
                 "DELETE FROM categories WHERE id = ?", (category_id,)

@@ -324,11 +324,14 @@ async def process_summary_batches(
     through_seconds: float,
     *,
     include_partial: bool = False,
+    batch_seconds: int | float | None = None,
 ) -> None:
-    """전사를 고정 2분 창으로 묶고, 처리 완료 지점을 의미 없는 창까지 기록합니다."""
+    """전사를 선택한 주기의 창으로 묶고, 처리 완료 지점을 의미 없는 창까지 기록합니다."""
     cursor = session.material.summary_processed_through_seconds
     through_seconds = max(cursor, through_seconds)
-    batch_seconds = float(settings.summary_batch_seconds)
+    batch_seconds = float(
+        settings.summary_batch_seconds if batch_seconds is None else batch_seconds
+    )
 
     while cursor + batch_seconds <= through_seconds + 0.001:
         window_end = cursor + batch_seconds
@@ -432,6 +435,8 @@ async def update_category(category_id: str, payload: CategoryUpdate) -> StudyCat
         category = repository().update_category(category_id, payload.name)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="같은 이름의 카테고리가 이미 있습니다.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if category is None:
         raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
     return category
@@ -439,7 +444,11 @@ async def update_category(category_id: str, payload: CategoryUpdate) -> StudyCat
 
 @app.delete("/api/categories/{category_id}", status_code=204)
 async def delete_category(category_id: str) -> Response:
-    if not repository().delete_category(category_id):
+    try:
+        deleted = repository().delete_category(category_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -448,10 +457,11 @@ async def delete_category(category_id: str) -> Response:
 async def create_session(payload: SessionCreate) -> LectureSession:
     if payload.category_id and not repository().get_category(payload.category_id):
         raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
+    category_id = payload.category_id or repository().default_category().id
     return repository().save(
         LectureSession(
             title=payload.title,
-            category_id=payload.category_id,
+            category_id=category_id,
             course_name=payload.course_name,
             source_type=payload.source_type,
             source_url=payload.source_url,
@@ -478,7 +488,9 @@ async def update_session(session_id: str, payload: SessionUpdate) -> LectureSess
     if "category_id" in payload.model_fields_set:
         if payload.category_id and not repository().get_category(payload.category_id):
             raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
-        session.category_id = payload.category_id
+        session.category_id = (
+            payload.category_id or repository().default_category().id
+        )
         session.category_revision += 1
         session.organization_revision += 1
     if "sort_order" in payload.model_fields_set:
@@ -499,6 +511,7 @@ async def update_status(session_id: str, payload: StatusUpdate) -> LectureSessio
                 session,
                 session.duration_seconds,
                 include_partial=True,
+                batch_seconds=payload.summary_batch_seconds,
             )
             await process_learning_item_batches(
                 session,
@@ -682,6 +695,11 @@ async def transcribe_audio(
     audio: UploadFile = File(...),
     start_seconds: float = Form(default=0, ge=0),
     end_seconds: float | None = Form(default=None, ge=0),
+    summary_batch_seconds: int = Form(
+        default=min(300, max(60, settings.summary_batch_seconds)),
+        ge=60,
+        le=300,
+    ),
 ) -> LectureSession:
     async with session_pipeline(session_id):
         return await _transcribe_audio_locked(
@@ -689,6 +707,7 @@ async def transcribe_audio(
             audio,
             start_seconds,
             end_seconds,
+            summary_batch_seconds,
         )
 
 
@@ -697,6 +716,7 @@ async def _transcribe_audio_locked(
     audio: UploadFile,
     start_seconds: float,
     end_seconds: float | None,
+    summary_batch_seconds: int,
 ) -> LectureSession:
     session = get_session_or_404(session_id)
     stt: SpeechToText | None = app.state.stt
@@ -723,7 +743,11 @@ async def _transcribe_audio_locked(
         # 오류 알림을 띄우지 않고 수집 시간만 보존합니다.
         session.duration_seconds = max(session.duration_seconds, chunk_end_seconds)
         repository().save(session)
-        await process_summary_batches(session, chunk_end_seconds)
+        await process_summary_batches(
+            session,
+            chunk_end_seconds,
+            batch_seconds=summary_batch_seconds,
+        )
         await process_learning_item_batches(session, chunk_end_seconds)
         return repository().save(session)
     corrected_text = result.text
@@ -751,8 +775,12 @@ async def _transcribe_audio_locked(
     if not await refine_transcript_segment(session, segment):
         return repository().save(session)
     repository().save(session)
-    # 화면용 요약은 정제 전사 2분 창, 용어·개념은 정제 전사 30초 창에서 생성합니다.
-    await process_summary_batches(session, chunk_end_seconds)
+    # 화면용 요약은 사용자 선택 주기, 용어·개념은 30초 창에서 생성합니다.
+    await process_summary_batches(
+        session,
+        chunk_end_seconds,
+        batch_seconds=summary_batch_seconds,
+    )
     await process_learning_item_batches(session, chunk_end_seconds)
     return repository().save(session)
 

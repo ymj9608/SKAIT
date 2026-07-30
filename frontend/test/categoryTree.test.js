@@ -47,3 +47,18 @@ test('sorts sessions by the persisted manual order instead of their date', () =>
 
   assert.deepEqual(ordered.map((session) => session.id), ['older', 'newer'])
 })
+
+test('places an uncategorized session in the default repository', () => {
+  const groups = buildVisibleCategoryGroups(
+    [
+      { id: 'default', name: '내 수업', parent_id: null, is_default: true },
+      { id: 'other', name: '백엔드', parent_id: null, is_default: false },
+    ],
+    [{ id: 'session-1', category_id: null }],
+  )
+
+  assert.deepEqual(
+    groups.find((group) => group.id === 'default').sessions.map((session) => session.id),
+    ['session-1'],
+  )
+})

@@ -72,12 +72,13 @@ export const api = {
     request(`/sessions/${id}/reference`, { method: 'DELETE' }),
   deleteReferenceDocument: (id, referenceId) =>
     request(`/sessions/${id}/references/${referenceId}`, { method: 'DELETE' }),
-  uploadAudio: (id, blob, startSeconds, endSeconds) => {
+  uploadAudio: (id, blob, startSeconds, endSeconds, summaryBatchSeconds = 120) => {
     const data = new FormData()
     const extension = blob.type.includes('ogg') ? 'ogg' : 'webm'
     data.append('audio', blob, `lecture-${Date.now()}.${extension}`)
     data.append('start_seconds', String(startSeconds))
     if (Number.isFinite(endSeconds)) data.append('end_seconds', String(endSeconds))
+    data.append('summary_batch_seconds', String(summaryBatchSeconds))
     return request(`/sessions/${id}/audio`, { method: 'POST', body: data })
   },
   refreshSummary: (id) => request(`/sessions/${id}/summary`, { method: 'POST' }),

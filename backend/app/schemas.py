@@ -32,6 +32,57 @@ def canonicalize_term_title(title: str) -> str:
     return normalized
 
 
+HONORIFIC_ENDING_REPLACEMENTS = (
+    ("아니다", "아닙니다"),
+    ("않는다", "않습니다"),
+    ("된다", "됩니다"),
+    ("한다", "합니다"),
+    ("이다", "입니다"),
+    ("있다", "있습니다"),
+    ("없다", "없습니다"),
+    ("하다", "합니다"),
+    ("어렵다", "어렵습니다"),
+    ("쉽다", "쉽습니다"),
+    ("같다", "같습니다"),
+    ("높다", "높습니다"),
+    ("낮다", "낮습니다"),
+    ("좋다", "좋습니다"),
+    ("낸다", "냅니다"),
+    ("진다", "집니다"),
+    ("든다", "듭니다"),
+    ("는다", "습니다"),
+    ("본다", "봅니다"),
+    ("준다", "줍니다"),
+    ("둔다", "둡니다"),
+    ("쓴다", "씁니다"),
+    ("셨어요", "셨습니다"),
+    ("됐어요", "됐습니다"),
+    ("했어요", "했습니다"),
+    ("였어요", "였습니다"),
+    ("았어요", "았습니다"),
+    ("었어요", "었습니다"),
+    ("하세요", "합니다"),
+    ("돼요", "됩니다"),
+    ("해요", "합니다"),
+    ("이에요", "입니다"),
+    ("예요", "입니다"),
+    ("있어요", "있습니다"),
+    ("없어요", "없습니다"),
+)
+
+
+def normalize_honorific_prose(text: str) -> str:
+    """AI 학습 노트의 문장 종결을 보수적으로 하십시오체로 통일합니다."""
+    normalized = text.strip()
+    for plain, honorific in HONORIFIC_ENDING_REPLACEMENTS:
+        normalized = re.sub(
+            rf"{re.escape(plain)}(?=(?:[.!?]|$))",
+            honorific,
+            normalized,
+        )
+    return normalized
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -64,9 +115,9 @@ class LearningItem(BaseModel):
         self.title = (
             canonicalize_term_title(self.title)
             if self.type == "term"
-            else self.title.strip()
+            else normalize_honorific_prose(self.title)
         )
-        self.explanation = self.explanation.strip()
+        self.explanation = normalize_honorific_prose(self.explanation)
         if not self.title or not self.explanation:
             raise ValueError("학습 항목의 제목과 설명은 비어 있을 수 없습니다.")
         return self
@@ -76,6 +127,17 @@ class SummaryTopic(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     summary: str = Field(min_length=1, max_length=800)
     key_points: list[str] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def normalize_style(self) -> "SummaryTopic":
+        self.title = self.title.strip()
+        self.summary = normalize_honorific_prose(self.summary)
+        self.key_points = [
+            normalize_honorific_prose(point)
+            for point in self.key_points
+            if point.strip()
+        ]
+        return self
 
 
 class BatchSummaryResult(BaseModel):
@@ -232,6 +294,21 @@ class StudyMaterial(BaseModel):
     learning_items_processed_through_seconds: float = Field(default=0, ge=0)
     summary_processed_through_seconds: float = Field(default=0, ge=0)
 
+    @model_validator(mode="after")
+    def normalize_legacy_generated_style(self) -> "StudyMaterial":
+        if self.summary != EMPTY_SUMMARY_TEXT:
+            self.summary = normalize_honorific_prose(self.summary)
+        self.key_points = [
+            normalize_honorific_prose(point)
+            for point in self.key_points
+            if point.strip()
+        ]
+        self.keyword_explanations = {
+            title: normalize_honorific_prose(explanation)
+            for title, explanation in self.keyword_explanations.items()
+        }
+        return self
+
 
 class ReferenceDocument(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -244,6 +321,7 @@ class StudyCategory(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     name: str = Field(min_length=1, max_length=40)
     parent_id: str | None = Field(default=None, max_length=64)
+    is_default: bool = False
     created_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -450,6 +528,7 @@ class TranscriptBatchUpdate(BaseModel):
 class StatusUpdate(BaseModel):
     status: Literal["ready", "recording", "completed"]
     duration_seconds: float | None = Field(default=None, ge=0)
+    summary_batch_seconds: int | None = Field(default=None, ge=60, le=300)
 
 
 class ChatMessage(BaseModel):

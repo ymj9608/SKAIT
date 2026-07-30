@@ -74,6 +74,19 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
 
 
 class SessionRepositoryTests(unittest.TestCase):
+    def test_fresh_repository_has_default_my_lessons_category(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = SessionRepository(Path(directory) / "skait.sqlite3")
+
+            categories = repository.list_categories()
+            saved = repository.save(sample_session())
+            repository.close()
+
+            self.assertEqual(len(categories), 1)
+            self.assertEqual(categories[0].name, "내 수업")
+            self.assertTrue(categories[0].is_default)
+            self.assertEqual(saved.category_id, categories[0].id)
+
     def test_categories_and_session_assignments_survive_restart(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "skait.sqlite3"
@@ -86,7 +99,7 @@ class SessionRepositoryTests(unittest.TestCase):
             repository.close()
 
             reopened = SessionRepository(database)
-            restored_category = reopened.list_categories()[0]
+            restored_category = reopened.get_category(category.id)
             restored_session = reopened.get(session.id)
             reopened.close()
 
@@ -117,10 +130,11 @@ class SessionRepositoryTests(unittest.TestCase):
             self.assertEqual(restored.sort_order, -7.5)
             self.assertEqual(restored.duration_seconds, 90)
 
-    def test_deleting_category_keeps_sessions_and_marks_them_uncategorized(self) -> None:
+    def test_deleting_root_category_moves_sessions_to_default_category(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "skait.sqlite3"
             repository = SessionRepository(database)
+            default_category = repository.default_category()
             category = repository.create_category(StudyCategory(name="자격증"))
             session = sample_session()
             session.category_id = category.id
@@ -129,15 +143,61 @@ class SessionRepositoryTests(unittest.TestCase):
             stale_background_snapshot = repository.get(session.id)
 
             self.assertTrue(repository.delete_category(category.id))
-            self.assertIsNone(repository.get(session.id).category_id)
+            self.assertEqual(
+                repository.get(session.id).category_id,
+                default_category.id,
+            )
 
             stale_background_snapshot.duration_seconds = 90
             merged = repository.save(stale_background_snapshot)
             repository.close()
 
-            self.assertIsNone(merged.category_id)
+            self.assertEqual(merged.category_id, default_category.id)
             self.assertGreater(merged.category_revision, saved.category_revision)
             self.assertEqual(merged.duration_seconds, 90)
+
+    def test_existing_uncategorized_sessions_are_migrated_to_default_category(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            saved = repository.save(sample_session())
+            repository.close()
+
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "UPDATE sessions SET category_id = NULL WHERE id = ?",
+                (saved.id,),
+            )
+            connection.commit()
+            connection.close()
+
+            migrated = SessionRepository(database)
+            default_category = migrated.default_category()
+            restored = migrated.get(saved.id)
+            migrated.close()
+
+            self.assertEqual(restored.category_id, default_category.id)
+
+    def test_default_category_can_be_renamed_but_not_deleted(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            default_category = repository.default_category()
+
+            renamed = repository.update_category(default_category.id, "SKALA 수업")
+            with self.assertRaisesRegex(ValueError, "삭제할 수 없습니다"):
+                repository.delete_category(default_category.id)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.default_category()
+            saved = reopened.save(sample_session())
+            reopened.close()
+
+            self.assertEqual(renamed.name, "SKALA 수업")
+            self.assertEqual(restored.name, "SKALA 수업")
+            self.assertTrue(restored.is_default)
+            self.assertEqual(saved.category_id, restored.id)
 
     def test_nested_categories_survive_restart_and_are_promoted_when_parent_is_deleted(self) -> None:
         with TemporaryDirectory() as directory:

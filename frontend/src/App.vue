@@ -71,6 +71,7 @@ let finalizationPromise = null
 const RECORDING_HEALTH_INTERVAL_MILLISECONDS = 2_000
 const RECORDING_HEALTH_TIMEOUT_MILLISECONDS = 1_500
 const RECORDING_HEALTH_FAILURE_LIMIT = 2
+const CLIENT_RECONNECT_MILLISECONDS = 2_000
 
 function upsertSession(session) {
   const index = sessions.value.findIndex((item) => item.id === session.id)
@@ -120,6 +121,56 @@ let recordingHealthCheckRunning = false
 let recordingHealthFailures = 0
 let recordingHealthGeneration = 0
 let recordingHealthController = null
+let clientSocket = null
+let clientReconnectTimer = null
+let clientPageClosing = false
+
+function stopClientConnection() {
+  clientPageClosing = true
+  window.clearTimeout(clientReconnectTimer)
+  clientReconnectTimer = null
+  const socket = clientSocket
+  clientSocket = null
+  if (
+    socket
+    && socket.readyState !== WebSocket.CLOSING
+    && socket.readyState !== WebSocket.CLOSED
+  ) {
+    socket.close(1000, 'SKAIT page closed')
+  }
+}
+
+function startClientConnection() {
+  if (
+    clientPageClosing
+    || clientSocket?.readyState === WebSocket.OPEN
+    || clientSocket?.readyState === WebSocket.CONNECTING
+  ) return
+
+  const socket = api.clientConnection()
+  clientSocket = socket
+  socket.addEventListener('close', () => {
+    if (clientSocket === socket) clientSocket = null
+    if (clientPageClosing) return
+    window.clearTimeout(clientReconnectTimer)
+    clientReconnectTimer = window.setTimeout(
+      startClientConnection,
+      CLIENT_RECONNECT_MILLISECONDS,
+    )
+  })
+  socket.addEventListener('error', () => socket.close())
+}
+
+function handlePageHide() {
+  recorder.abort()
+  recordingSessionId.value = null
+  stopClientConnection()
+}
+
+function handlePageShow() {
+  clientPageClosing = false
+  startClientConnection()
+}
 
 function stopRecordingHealthMonitor() {
   recordingHealthGeneration += 1
@@ -692,10 +743,19 @@ async function updateSummaries(payload) {
 }
 
 onMounted(async () => {
+  clientPageClosing = false
+  window.addEventListener('pagehide', handlePageHide)
+  window.addEventListener('pageshow', handlePageShow)
+  startClientConnection()
   await loadApp()
 })
 
-onBeforeUnmount(stopRecordingHealthMonitor)
+onBeforeUnmount(() => {
+  window.removeEventListener('pagehide', handlePageHide)
+  window.removeEventListener('pageshow', handlePageShow)
+  stopRecordingHealthMonitor()
+  stopClientConnection()
+})
 
 </script>
 

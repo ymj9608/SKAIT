@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from app.config import Settings
 from app.schemas import (
@@ -1006,6 +1007,46 @@ class StudyServiceTests(unittest.TestCase):
                 )
             ],
         )
+
+    def test_ollama_async_chat_closes_immediately_when_cancelled(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b")
+        request_started = asyncio.Event()
+        request_cancelled = asyncio.Event()
+
+        class FakeAsyncClient:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, *_args, **_kwargs):
+                request_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    request_cancelled.set()
+
+        async def run_scenario() -> None:
+            with patch(
+                "app.services.study.httpx.AsyncClient",
+                FakeAsyncClient,
+            ):
+                task = asyncio.create_task(
+                    assistant._chat_async(
+                        [{"role": "user", "content": "질문"}],
+                    )
+                )
+                await request_started.wait()
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(run_scenario())
+        self.assertTrue(request_cancelled.is_set())
 
     def test_mlx_stt_cleans_up_temporary_audio(self) -> None:
         captured_path = None

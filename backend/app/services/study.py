@@ -9,6 +9,8 @@ from collections import Counter
 from random import SystemRandom
 from urllib.request import Request, urlopen
 
+import httpx
+
 from ..config import Settings
 from ..schemas import (
     BatchSummaryResult,
@@ -2592,6 +2594,25 @@ class HuggingFaceStudyAssistant(LocalStudyAssistant):
         content = response.choices[0].message.content
         return str(content or "").strip()
 
+    async def _chat_async(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 700,
+        temperature: float | None = None,
+    ) -> str:
+        if temperature is None:
+            return await asyncio.to_thread(
+                self._chat,
+                messages,
+                max_tokens,
+            )
+        return await asyncio.to_thread(
+            self._chat,
+            messages,
+            max_tokens,
+            temperature,
+        )
+
     async def refine_transcript(
         self,
         previous_clean_context: str,
@@ -2600,8 +2621,7 @@ class HuggingFaceStudyAssistant(LocalStudyAssistant):
         if not current_raw_stt.strip():
             return None
         try:
-            raw = await asyncio.to_thread(
-                self._chat,
+            raw = await self._chat_async(
                 build_transcript_refinement_messages(
                     previous_clean_context,
                     current_raw_stt,
@@ -2672,8 +2692,7 @@ Requirements:
 </TRANSCRIPT>
 {reference_section}"""
         try:
-            raw = await asyncio.to_thread(
-                self._chat,
+            raw = await self._chat_async(
                 [
                     {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
                     *SUMMARY_ICL_MESSAGES,
@@ -2701,8 +2720,7 @@ Requirements:
         if not has_substantive_instruction(source_context):
             return BatchSummaryResult()
         try:
-            raw = await asyncio.to_thread(
-                self._chat,
+            raw = await self._chat_async(
                 build_batch_summary_messages(
                     prepared_segments,
                     previous_summary,
@@ -2756,8 +2774,7 @@ Return exactly one JSON object: {{"corrected_text":"..."}}
 {reference_context}
 </PDF_REFERENCE>"""
         try:
-            raw = await asyncio.to_thread(
-                self._chat,
+            raw = await self._chat_async(
                 [
                     {
                         "role": "system",
@@ -2792,8 +2809,7 @@ Return exactly one JSON object: {{"corrected_text":"..."}}
         ):
             return []
         try:
-            raw = await asyncio.to_thread(
-                self._chat,
+            raw = await self._chat_async(
                 build_learning_item_detection_messages(
                     previous_context,
                     filtered_current_context,
@@ -2839,8 +2855,7 @@ Additional requirements:
 {summary_context}
 </LECTURE_SUMMARY>"""
             try:
-                raw = await asyncio.to_thread(
-                    self._chat,
+                raw = await self._chat_async(
                     [
                         {"role": "system", "content": QUIZ_SYSTEM_PROMPT},
                         *QUIZ_ICL_MESSAGES,
@@ -2887,8 +2902,7 @@ Additional requirements:
 """
         raw = ""
         try:
-            raw = await asyncio.to_thread(
-                self._chat,
+            raw = await self._chat_async(
                 build_answer_messages(
                     question,
                     sources,
@@ -2982,6 +2996,33 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
         with urlopen(request, timeout=timeout or self.timeout_seconds) as response:
             return json.loads(response.read().decode("utf-8"))
 
+    def _chat_payload(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+    ) -> dict:
+        return {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "format": "json",
+            "think": False,
+            "keep_alive": self.keep_alive,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "num_ctx": self.context_window,
+            },
+        }
+
+    @staticmethod
+    def _chat_content(response: dict) -> str:
+        content = response.get("message", {}).get("content")
+        if not content:
+            raise RuntimeError("Ollama가 빈 응답을 반환했습니다.")
+        return str(content).strip()
+
     def _chat(
         self,
         messages: list[dict[str, str]],
@@ -2990,24 +3031,37 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
     ) -> str:
         response = self._request_json(
             "/api/chat",
-            {
-                "model": self.model,
-                "messages": messages,
-                "stream": False,
-                "format": "json",
-                "think": False,
-                "keep_alive": self.keep_alive,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                    "num_ctx": self.context_window,
-                },
-            },
+            self._chat_payload(messages, max_tokens, temperature),
         )
-        content = response.get("message", {}).get("content")
-        if not content:
-            raise RuntimeError("Ollama가 빈 응답을 반환했습니다.")
-        return str(content).strip()
+        return self._chat_content(response)
+
+    async def _chat_async(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 700,
+        temperature: float | None = None,
+    ) -> str:
+        # 테스트·확장 코드가 인스턴스의 동기 채팅 구현을 바꾼 경우에도
+        # 기존 동작을 유지합니다. 기본 Ollama 경로는 취소 가능한 비동기
+        # 연결을 사용하므로 브라우저 종료 시 생성 요청도 함께 끊어집니다.
+        if "_chat" in self.__dict__:
+            return await super()._chat_async(messages, max_tokens, temperature)
+        resolved_temperature = 0.2 if temperature is None else temperature
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout_seconds,
+            trust_env=False,
+        ) as client:
+            response = await client.post(
+                "/api/chat",
+                json=self._chat_payload(
+                    messages,
+                    max_tokens,
+                    resolved_temperature,
+                ),
+            )
+            response.raise_for_status()
+            return self._chat_content(response.json())
 
     async def is_ready(self) -> bool:
         try:
@@ -3036,6 +3090,7 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
                 },
                 10,
             )
+            logger.info("ollama model unloaded (%s)", self.model)
         except Exception as exc:
             # Ollama가 먼저 종료됐거나 연결할 수 없어도 앱 종료를 막지 않습니다.
             logger.info("ollama model unload skipped (%s): %s", self.model, exc)

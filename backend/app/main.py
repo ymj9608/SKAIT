@@ -1,10 +1,24 @@
 import asyncio
+import logging
 import sqlite3
 from contextlib import asynccontextmanager
+from typing import Awaitable, TypeVar
+from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 
+from .client_lifecycle import ClientConnectionTracker
 from .config import get_settings
 from .demo import build_demo_session
 from .repository import SessionRepository, migrate_legacy_database
@@ -49,8 +63,11 @@ from .services.study import (
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 MAX_REFERENCE_DOCUMENTS = 20
+CLIENT_IDLE_SECONDS = 10
 _SESSION_PIPELINE_LOCKS: dict[str, asyncio.Lock] = {}
+AI_RESULT = TypeVar("AI_RESULT")
 
 
 @asynccontextmanager
@@ -59,6 +76,66 @@ async def session_pipeline(session_id: str):
     lock = _SESSION_PIPELINE_LOCKS.setdefault(session_id, asyncio.Lock())
     async with lock:
         yield
+
+
+async def tracked_ai_call(operation: Awaitable[AI_RESULT]) -> AI_RESULT:
+    """브라우저 연결 종료 시 취소할 수 있도록 현재 AI 요청을 등록합니다."""
+    task = asyncio.current_task()
+    active_tasks: set[asyncio.Task] | None = getattr(
+        app.state,
+        "active_ai_tasks",
+        None,
+    )
+    if task is not None and active_tasks is not None:
+        active_tasks.add(task)
+    try:
+        return await operation
+    finally:
+        if task is not None and active_tasks is not None:
+            active_tasks.discard(task)
+
+
+async def cancel_active_ai_operations(app_instance: FastAPI) -> None:
+    current_task = asyncio.current_task()
+    active_tasks: set[asyncio.Task] = getattr(
+        app_instance.state,
+        "active_ai_tasks",
+        set(),
+    )
+    tasks = [
+        task
+        for task in tuple(active_tasks)
+        if task is not current_task and not task.done()
+    ]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def release_idle_ai_resources(app_instance: FastAPI) -> None:
+    """연결된 브라우저가 없을 때 AI 요청을 취소하고 Ollama 모델을 내립니다."""
+    tracker: ClientConnectionTracker = app_instance.state.client_connections
+    if tracker.has_connections:
+        return
+    await cancel_active_ai_operations(app_instance)
+    if tracker.has_connections:
+        return
+    assistant: StudyAssistant | None = app_instance.state.assistant
+    if assistant is not None:
+        logger.info(
+            "no SKAIT browser connection for %s seconds; unloading AI resources",
+            CLIENT_IDLE_SECONDS,
+        )
+        await assistant.close()
+
+
+async def monitor_client_connections(app_instance: FastAPI) -> None:
+    tracker: ClientConnectionTracker = app_instance.state.client_connections
+    while True:
+        await asyncio.sleep(1)
+        if tracker.claim_idle_cleanup():
+            await release_idle_ai_resources(app_instance)
 
 
 @asynccontextmanager
@@ -72,6 +149,9 @@ async def lifespan(app: FastAPI):
     app.state.stt_error = None
     app.state.assistant = None
     app.state.llm_error = None
+    app.state.active_ai_tasks = set()
+    app.state.client_connections = ClientConnectionTracker(CLIENT_IDLE_SECONDS)
+    app.state.client_monitor_task = None
     try:
         app.state.stt = build_stt(settings)
     except (RuntimeError, ImportError) as exc:
@@ -80,10 +160,18 @@ async def lifespan(app: FastAPI):
         app.state.assistant = build_study_assistant(settings)
     except (RuntimeError, ImportError) as exc:
         app.state.llm_error = str(exc)
+    app.state.client_monitor_task = asyncio.create_task(
+        monitor_client_connections(app)
+    )
     try:
         yield
     finally:
+        monitor_task: asyncio.Task | None = app.state.client_monitor_task
+        if monitor_task is not None:
+            monitor_task.cancel()
+            await asyncio.gather(monitor_task, return_exceptions=True)
         try:
+            await cancel_active_ai_operations(app)
             assistant = app.state.assistant
             if assistant is not None:
                 await assistant.close()
@@ -173,9 +261,11 @@ async def refine_transcript_segment(
         f"[{format_timestamp(item.start_seconds)}] {item.speaker}: {item.text}"
         for item in previous_segments[-12:]
     )
-    cleaned = await assistant_or_503().refine_transcript(
-        previous_context,
-        segment.text,
+    cleaned = await tracked_ai_call(
+        assistant_or_503().refine_transcript(
+            previous_context,
+            segment.text,
+        )
     )
     if not cleaned:
         return False
@@ -208,10 +298,12 @@ async def detect_learning_items_window(
         for segment in segments
     )
     recent_titles = [item.title for item in session.material.learning_items[-10:]]
-    detected = await assistant_or_503().detect_learning_items(
-        previous_context,
-        current_context,
-        recent_titles,
+    detected = await tracked_ai_call(
+        assistant_or_503().detect_learning_items(
+            previous_context,
+            current_context,
+            recent_titles,
+        )
     )
     # 새 항목이 없어도 이전 버전에서 과도하게 쌓인 항목 수는 보수적인 한도로 줄입니다.
     session.material = merge_learning_items(session.material, detected)
@@ -297,17 +389,21 @@ async def summarize_window(
         for topic in card.topics
     ]
     if session.reference_text:
-        result = await assistant_or_503().summarize_batch(
-            segments,
-            previous_summary,
-            recent_topics,
-            session.reference_text,
+        result = await tracked_ai_call(
+            assistant_or_503().summarize_batch(
+                segments,
+                previous_summary,
+                recent_topics,
+                session.reference_text,
+            )
         )
     else:
-        result = await assistant_or_503().summarize_batch(
-            segments,
-            previous_summary,
-            recent_topics,
+        result = await tracked_ai_call(
+            assistant_or_503().summarize_batch(
+                segments,
+                previous_summary,
+                recent_topics,
+            )
         )
     result = remove_duplicate_topics(result, previous_cards)
     if not result.has_meaningful_content or not result.topics:
@@ -408,6 +504,22 @@ async def health() -> HealthResponse:
         stt_error=app.state.stt_error if not stt_ready else None,
         llm_error=app.state.llm_error if not llm_ready else None,
     )
+
+
+@app.websocket("/api/client/connection")
+async def client_connection(websocket: WebSocket) -> None:
+    """열려 있는 각 SKAIT 탭의 연결을 서버 자원 수명과 연결합니다."""
+    connection_id = uuid4().hex
+    tracker: ClientConnectionTracker = app.state.client_connections
+    await websocket.accept()
+    tracker.connect(connection_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        tracker.disconnect(connection_id)
 
 
 @app.get("/api/sessions", response_model=list[LectureSession])
@@ -752,7 +864,9 @@ async def _transcribe_audio_locked(
             detail=f"오디오는 {settings.max_audio_mb}MB 이하의 구간으로 전송해 주세요.",
         )
     try:
-        result = await stt.transcribe(raw, audio.filename or "lecture.webm")
+        result = await tracked_ai_call(
+            stt.transcribe(raw, audio.filename or "lecture.webm")
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"음성 인식에 실패했습니다: {exc}") from exc
     chunk_end_seconds = max(start_seconds, end_seconds or start_seconds)
@@ -773,10 +887,12 @@ async def _transcribe_audio_locked(
         recent_context = "\n".join(
             item.text for item in session.segments[-3:] if item.is_refined
         )
-        corrected_text = await assistant_or_503().correct_transcript(
-            result.text,
-            session.reference_text,
-            recent_context,
+        corrected_text = await tracked_ai_call(
+            assistant_or_503().correct_transcript(
+                result.text,
+                session.reference_text,
+                recent_context,
+            )
         )
     segment = TranscriptSegment(
         start_seconds=start_seconds,
@@ -883,9 +999,11 @@ async def generate_quiz(session_id: str) -> LectureSession:
             detail="수업 내용이 없으므로 퀴즈를 생성할 수 없습니다.",
         )
     try:
-        questions = await assistant_or_503().generate_quiz(
-            summary_context,
-            quiz_question_count(summary_context),
+        questions = await tracked_ai_call(
+            assistant_or_503().generate_quiz(
+                summary_context,
+                quiz_question_count(summary_context),
+            )
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -915,11 +1033,13 @@ async def chat(session_id: str, payload: ChatRequest) -> ChatResponse:
         )
         for message in session.chat_messages[-12:]
     ]
-    result = await assistant_or_503().answer(
-        payload.message,
-        clean_segments,
-        session.material,
-        payload.history or stored_history,
+    result = await tracked_ai_call(
+        assistant_or_503().answer(
+            payload.message,
+            clean_segments,
+            session.material,
+            payload.history or stored_history,
+        )
     )
     repository().append_chat_messages(
         session_id,

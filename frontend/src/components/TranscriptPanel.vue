@@ -13,6 +13,7 @@ import {
   Trash2,
   Waves,
 } from '@lucide/vue'
+import { summaryCardKeyPoints } from '../utils/summaryCard'
 import { findSummaryCardForSource } from '../utils/summaryEvidence'
 
 const props = defineProps({
@@ -441,58 +442,51 @@ watch(
                   <Trash2 :size="14" /> 이 요약 삭제
                 </button>
               </div>
-              <section
-                v-for="(topic, topicIndex) in summaryEditing
-                  ? summaryDrafts.cards[item.card.id].topics
-                  : item.card.topics"
-                :key="`${item.card.id}-${topicIndex}`"
-                class="summary-topic"
-              >
-                <div v-if="summaryEditing" class="summary-topic-edit-fields">
-                  <label>
-                    <span>주제 제목</span>
-                    <input
-                      v-model="topic.title"
-                      maxlength="100"
-                      :aria-label="`${topicIndex + 1}번째 요약 주제 제목`"
-                      @keydown.esc="cancelSummaryEditing"
-                    />
-                  </label>
-                  <label>
-                    <span>요약 내용</span>
-                    <textarea
-                      v-model="topic.summary"
-                      rows="4"
-                      maxlength="800"
-                      :aria-label="`${topicIndex + 1}번째 요약 내용`"
-                      @keydown.esc="cancelSummaryEditing"
-                    />
-                  </label>
-                  <label>
-                    <span>핵심 포인트 <small>한 줄에 하나, 최대 5개</small></span>
-                    <textarea
-                      v-model="topic.keyPointsText"
-                      rows="4"
-                      maxlength="2500"
-                      :aria-label="`${topicIndex + 1}번째 핵심 포인트`"
-                      @keydown.esc="cancelSummaryEditing"
-                    />
-                  </label>
-                </div>
-                <template v-else>
-                  <div class="summary-topic-heading">
-                    <span>{{ String(topicIndex + 1).padStart(2, '0') }}</span>
-                    <h3>{{ topic.title }}</h3>
+              <template v-if="summaryEditing">
+                <section
+                  v-for="(topic, topicIndex) in summaryDrafts.cards[item.card.id].topics"
+                  :key="`${item.card.id}-${topicIndex}`"
+                  class="summary-topic"
+                >
+                  <div class="summary-topic-edit-fields">
+                    <label>
+                      <span>주제 제목</span>
+                      <input
+                        v-model="topic.title"
+                        maxlength="100"
+                        :aria-label="`${topicIndex + 1}번째 요약 주제 제목`"
+                        @keydown.esc="cancelSummaryEditing"
+                      />
+                    </label>
+                    <label>
+                      <span>요약 내용</span>
+                      <textarea
+                        v-model="topic.summary"
+                        rows="4"
+                        maxlength="800"
+                        :aria-label="`${topicIndex + 1}번째 요약 내용`"
+                        @keydown.esc="cancelSummaryEditing"
+                      />
+                    </label>
+                    <label>
+                      <span>핵심 포인트 <small>한 줄에 하나, 최대 5개</small></span>
+                      <textarea
+                        v-model="topic.keyPointsText"
+                        rows="4"
+                        maxlength="2500"
+                        :aria-label="`${topicIndex + 1}번째 핵심 포인트`"
+                        @keydown.esc="cancelSummaryEditing"
+                      />
+                    </label>
                   </div>
-                  <p>{{ topic.summary }}</p>
-                  <div v-if="topic.key_points?.length" class="summary-key-points">
-                    <strong><ListChecks :size="14" /> Key Points</strong>
-                    <ul>
-                      <li v-for="point in topic.key_points" :key="point">{{ point }}</li>
-                    </ul>
-                  </div>
-                </template>
-              </section>
+                </section>
+              </template>
+              <div v-else-if="summaryCardKeyPoints(item.card).length" class="summary-key-points">
+                <strong><ListChecks :size="14" /> Key Points</strong>
+                <ul>
+                  <li v-for="point in summaryCardKeyPoints(item.card)" :key="point">{{ point }}</li>
+                </ul>
+              </div>
               <div class="summary-grounding-note">
                 <BookCheck :size="14" /> AI가 생성한 요약이며 직접 수정할 수 있습니다.
               </div>

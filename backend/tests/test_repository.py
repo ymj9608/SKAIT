@@ -18,6 +18,7 @@ from app.schemas import (
     QuizQuestion,
     ReferenceDocument,
     SessionCreate,
+    StudyCategory,
     StudyMaterial,
     SummaryNote,
     SourceReference,
@@ -73,6 +74,122 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
 
 
 class SessionRepositoryTests(unittest.TestCase):
+    def test_categories_and_session_assignments_survive_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            category = repository.create_category(StudyCategory(name="백엔드 개발"))
+            session = sample_session()
+            session.category_id = category.id
+            session.category_revision += 1
+            repository.save(session)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored_category = reopened.list_categories()[0]
+            restored_session = reopened.get(session.id)
+            reopened.close()
+
+            self.assertEqual(restored_category.name, "백엔드 개발")
+            self.assertEqual(restored_session.category_id, category.id)
+
+    def test_manual_session_order_survives_restart_and_stale_background_saves(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            saved = repository.save(sample_session())
+            stale_background_snapshot = repository.get(saved.id)
+
+            reordered = repository.get(saved.id)
+            reordered.sort_order = -7.5
+            reordered.organization_revision += 1
+            repository.save(reordered)
+
+            stale_background_snapshot.duration_seconds = 90
+            merged = repository.save(stale_background_snapshot)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.get(saved.id)
+            reopened.close()
+
+            self.assertEqual(merged.sort_order, -7.5)
+            self.assertEqual(restored.sort_order, -7.5)
+            self.assertEqual(restored.duration_seconds, 90)
+
+    def test_deleting_category_keeps_sessions_and_marks_them_uncategorized(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            category = repository.create_category(StudyCategory(name="자격증"))
+            session = sample_session()
+            session.category_id = category.id
+            session.category_revision += 1
+            saved = repository.save(session)
+            stale_background_snapshot = repository.get(session.id)
+
+            self.assertTrue(repository.delete_category(category.id))
+            self.assertIsNone(repository.get(session.id).category_id)
+
+            stale_background_snapshot.duration_seconds = 90
+            merged = repository.save(stale_background_snapshot)
+            repository.close()
+
+            self.assertIsNone(merged.category_id)
+            self.assertGreater(merged.category_revision, saved.category_revision)
+            self.assertEqual(merged.duration_seconds, 90)
+
+    def test_nested_categories_survive_restart_and_are_promoted_when_parent_is_deleted(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            parent = repository.create_category(StudyCategory(name="개발"))
+            child = repository.create_category(
+                StudyCategory(name="백엔드", parent_id=parent.id)
+            )
+            grandchild = repository.create_category(
+                StudyCategory(name="Spring", parent_id=child.id)
+            )
+            session = sample_session()
+            session.category_id = child.id
+            session.category_revision += 1
+            repository.save(session)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = {category.id: category for category in reopened.list_categories()}
+            self.assertEqual(restored[child.id].parent_id, parent.id)
+            self.assertEqual(restored[grandchild.id].parent_id, child.id)
+
+            self.assertTrue(reopened.delete_category(child.id))
+            promoted = {category.id: category for category in reopened.list_categories()}
+            promoted_session = reopened.get(session.id)
+            reopened.close()
+
+            self.assertNotIn(child.id, promoted)
+            self.assertEqual(promoted[grandchild.id].parent_id, parent.id)
+            self.assertEqual(promoted_session.category_id, parent.id)
+
+    def test_existing_flat_category_table_is_migrated_without_data_loss(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            category = repository.create_category(StudyCategory(name="기존 카테고리"))
+            repository.close()
+
+            connection = sqlite3.connect(database)
+            connection.execute("DROP INDEX idx_categories_parent_created_at")
+            connection.execute("ALTER TABLE categories DROP COLUMN parent_id")
+            connection.commit()
+            connection.close()
+
+            migrated = SessionRepository(database)
+            restored = migrated.get_category(category.id)
+            migrated.close()
+
+            self.assertEqual(restored.name, "기존 카테고리")
+            self.assertIsNone(restored.parent_id)
+
     def test_legacy_database_is_renamed_without_losing_sessions(self) -> None:
         with TemporaryDirectory() as directory:
             directory_path = Path(directory)

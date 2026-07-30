@@ -20,6 +20,21 @@ class SessionUpdateTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             SessionUpdate(title="   ")
 
+    def test_category_can_be_changed_or_cleared_without_a_title(self) -> None:
+        self.assertEqual(SessionUpdate(category_id="category-1").category_id, "category-1")
+        self.assertIsNone(SessionUpdate(category_id=None).category_id)
+
+    def test_empty_session_update_is_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            SessionUpdate()
+
+    def test_sort_order_can_be_updated_without_other_fields(self) -> None:
+        self.assertEqual(SessionUpdate(sort_order=-1.5).sort_order, -1.5)
+
+    def test_null_sort_order_is_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            SessionUpdate(sort_order=None)
+
     def test_lesson_text_is_trimmed(self) -> None:
         payload = TranscriptUpdate(text="  수정한 수업 내용  ")
         self.assertEqual(payload.text, "수정한 수업 내용")

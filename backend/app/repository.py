@@ -5,7 +5,13 @@ import sqlite3
 from pathlib import Path
 from threading import RLock
 
-from .schemas import ConversationMessage, LectureSession, StudyMaterial, TranscriptSegment
+from .schemas import (
+    ConversationMessage,
+    LectureSession,
+    StudyCategory,
+    StudyMaterial,
+    TranscriptSegment,
+)
 
 
 LEGACY_IMPORT_MARKER = "legacy_json_import_v1"
@@ -92,6 +98,10 @@ class SessionRepository:
                     title TEXT NOT NULL,
                     title_revision INTEGER NOT NULL DEFAULT 0,
                     summary_notes_revision INTEGER NOT NULL DEFAULT 0,
+                    category_revision INTEGER NOT NULL DEFAULT 0,
+                    organization_revision INTEGER NOT NULL DEFAULT 0,
+                    category_id TEXT,
+                    sort_order REAL NOT NULL DEFAULT 0,
                     course_name TEXT NOT NULL,
                     source_type TEXT NOT NULL
                         CHECK(source_type IN ('zoom', 'youtube', 'demo')),
@@ -124,6 +134,13 @@ class SessionRepository:
                     ON sessions(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_segments_session_position
                     ON segments(session_id, position);
+
+                CREATE TABLE IF NOT EXISTS categories (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    parent_id TEXT,
+                    created_at TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     id TEXT PRIMARY KEY,
@@ -197,6 +214,52 @@ class SessionRepository:
                     "ALTER TABLE sessions ADD COLUMN session_revision "
                     "INTEGER NOT NULL DEFAULT 0"
                 )
+            if "category_revision" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN category_revision "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            if "category_id" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN category_id TEXT"
+                )
+            if "organization_revision" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN organization_revision "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            sort_order_missing = "sort_order" not in session_columns
+            if sort_order_missing:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN sort_order REAL NOT NULL DEFAULT 0"
+                )
+                rows = self._connection.execute(
+                    "SELECT id FROM sessions ORDER BY created_at DESC"
+                ).fetchall()
+                self._connection.executemany(
+                    "UPDATE sessions SET sort_order = ? WHERE id = ?",
+                    [(position, row["id"]) for position, row in enumerate(rows)],
+                )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_category_created_at "
+                "ON sessions(category_id, created_at DESC)"
+            )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_category_sort_order "
+                "ON sessions(category_id, sort_order ASC, created_at DESC)"
+            )
+            category_columns = {
+                str(row["name"])
+                for row in self._connection.execute("PRAGMA table_info(categories)")
+            }
+            if "parent_id" not in category_columns:
+                self._connection.execute(
+                    "ALTER TABLE categories ADD COLUMN parent_id TEXT"
+                )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_categories_parent_created_at "
+                "ON categories(parent_id, created_at ASC)"
+            )
 
     def _import_legacy_json_once(self) -> None:
         if not self.legacy_json_file or not self.legacy_json_file.exists():
@@ -250,6 +313,12 @@ class SessionRepository:
 
     def _upsert_session(self, session: LectureSession) -> None:
         session.sync_reference_fields()
+        if session.category_id:
+            category_exists = self._connection.execute(
+                "SELECT 1 FROM categories WHERE id = ?", (session.category_id,)
+            ).fetchone()
+            if not category_exists:
+                session.category_id = None
         self._compact_legacy_keywords(session.material)
         references_json = json.dumps(
             [
@@ -267,15 +336,20 @@ class SessionRepository:
             """
             INSERT INTO sessions(
                 id, session_revision, title, title_revision, summary_notes_revision,
+                category_revision, organization_revision, category_id, sort_order,
                 course_name, source_type, source_url, created_at, status,
                 duration_seconds, reference_name, reference_text, references_json,
                 material_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 session_revision = excluded.session_revision,
                 title = excluded.title,
                 title_revision = excluded.title_revision,
                 summary_notes_revision = excluded.summary_notes_revision,
+                category_revision = excluded.category_revision,
+                organization_revision = excluded.organization_revision,
+                category_id = excluded.category_id,
+                sort_order = excluded.sort_order,
                 course_name = excluded.course_name,
                 source_type = excluded.source_type,
                 source_url = excluded.source_url,
@@ -293,6 +367,10 @@ class SessionRepository:
                 session.title,
                 session.title_revision,
                 session.summary_notes_revision,
+                session.category_revision,
+                session.organization_revision,
+                session.category_id,
+                session.sort_order,
                 session.course_name,
                 session.source_type,
                 session.source_url,
@@ -395,6 +473,10 @@ class SessionRepository:
             title=row["title"],
             title_revision=row["title_revision"],
             summary_notes_revision=row["summary_notes_revision"],
+            category_revision=row["category_revision"],
+            organization_revision=row["organization_revision"],
+            category_id=row["category_id"],
+            sort_order=row["sort_order"],
             course_name=row["course_name"],
             source_type=row["source_type"],
             source_url=row["source_url"],
@@ -466,7 +548,8 @@ class SessionRepository:
         row = self._connection.execute(
             """
             SELECT session_revision, title, title_revision,
-                   summary_notes_revision, material_json
+                   summary_notes_revision, category_revision, category_id,
+                   organization_revision, sort_order, material_json
             FROM sessions
             WHERE id = ?
             """,
@@ -474,6 +557,11 @@ class SessionRepository:
         ).fetchone()
         if not row:
             snapshot.session_revision = max(1, snapshot.session_revision + 1)
+            first_order = self._connection.execute(
+                "SELECT MIN(sort_order) FROM sessions WHERE category_id IS ?",
+                (snapshot.category_id,),
+            ).fetchone()[0]
+            snapshot.sort_order = float(first_order) - 1 if first_order is not None else 0
             return
 
         snapshot.session_revision = max(
@@ -485,6 +573,16 @@ class SessionRepository:
         if persisted_title_revision > snapshot.title_revision:
             snapshot.title = row["title"]
             snapshot.title_revision = persisted_title_revision
+
+        persisted_category_revision = int(row["category_revision"] or 0)
+        if persisted_category_revision > snapshot.category_revision:
+            snapshot.category_id = row["category_id"]
+            snapshot.category_revision = persisted_category_revision
+
+        persisted_organization_revision = int(row["organization_revision"] or 0)
+        if persisted_organization_revision > snapshot.organization_revision:
+            snapshot.sort_order = float(row["sort_order"])
+            snapshot.organization_revision = persisted_organization_revision
 
         persisted_material = StudyMaterial.model_validate(json.loads(row["material_json"]))
         persisted_summary_notes_revision = int(row["summary_notes_revision"] or 0)
@@ -563,6 +661,84 @@ class SessionRepository:
                 "DELETE FROM sessions WHERE id = ?", (session_id,)
             )
         return cursor.rowcount > 0
+
+    def list_categories(self) -> list[StudyCategory]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT id, name, parent_id, created_at "
+                "FROM categories ORDER BY created_at ASC"
+            ).fetchall()
+            return [StudyCategory.model_validate(dict(row)) for row in rows]
+
+    def get_category(self, category_id: str) -> StudyCategory | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT id, name, parent_id, created_at FROM categories WHERE id = ?",
+                (category_id,),
+            ).fetchone()
+            return StudyCategory.model_validate(dict(row)) if row else None
+
+    def create_category(self, category: StudyCategory) -> StudyCategory:
+        snapshot = category.model_copy(deep=True)
+        with self._lock, self._connection:
+            if snapshot.parent_id:
+                parent_exists = self._connection.execute(
+                    "SELECT 1 FROM categories WHERE id = ?", (snapshot.parent_id,)
+                ).fetchone()
+                if not parent_exists:
+                    raise ValueError("상위 카테고리를 찾을 수 없습니다.")
+            self._connection.execute(
+                "INSERT INTO categories(id, name, parent_id, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    snapshot.id,
+                    snapshot.name,
+                    snapshot.parent_id,
+                    snapshot.created_at.isoformat(),
+                ),
+            )
+        return snapshot
+
+    def update_category(self, category_id: str, name: str) -> StudyCategory | None:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE categories SET name = ? WHERE id = ?",
+                (name, category_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            row = self._connection.execute(
+                "SELECT id, name, parent_id, created_at FROM categories WHERE id = ?",
+                (category_id,),
+            ).fetchone()
+        return StudyCategory.model_validate(dict(row))
+
+    def delete_category(self, category_id: str) -> bool:
+        with self._lock, self._connection:
+            category = self._connection.execute(
+                "SELECT parent_id FROM categories WHERE id = ?", (category_id,)
+            ).fetchone()
+            if not category:
+                return False
+            self._connection.execute(
+                "UPDATE categories SET parent_id = ? WHERE parent_id = ?",
+                (category["parent_id"], category_id),
+            )
+            self._connection.execute(
+                """
+                UPDATE sessions
+                SET category_id = ?,
+                    category_revision = category_revision + 1,
+                    organization_revision = organization_revision + 1,
+                    session_revision = session_revision + 1
+                WHERE category_id = ?
+                """,
+                (category["parent_id"], category_id),
+            )
+            self._connection.execute(
+                "DELETE FROM categories WHERE id = ?", (category_id,)
+            )
+        return True
 
     def close(self) -> None:
         with self._lock:

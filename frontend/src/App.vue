@@ -5,10 +5,12 @@ import {
   CircleStop,
   Cloud,
   FileText,
+  Folder,
   LoaderCircle,
   Menu,
   MonitorPlay,
   MonitorUp,
+  Plus,
   Radio,
   Sparkles,
   Trash2,
@@ -24,6 +26,7 @@ import { mergeSessionResponse } from './utils/sessionState'
 import skaitLogo from './assets/brand/skait-logo.png'
 
 const sessions = ref([])
+const categories = ref([])
 const activeSession = ref(null)
 const health = ref({
   stt_ready: false,
@@ -41,6 +44,11 @@ const sidebarCollapsed = ref(false)
 const createModalOpen = ref(false)
 const newTitle = ref('새 수업')
 const newSourceType = ref('zoom')
+const newCategoryId = ref('')
+const newCategoryName = ref('')
+const newCategoryParentId = ref('')
+const newCategoryInputOpen = ref(false)
+const creatingCategory = ref(false)
 const newReferenceFiles = ref([])
 const referenceInput = ref(null)
 const transcriptPanel = ref(null)
@@ -102,6 +110,29 @@ const sessionDate = computed(() => {
   }).format(new Date(activeSession.value.created_at))
 })
 
+const activeCategoryName = computed(() => (
+  categoryPath(activeSession.value?.category_id) || '내 학습'
+))
+
+const categoryOptions = computed(() => categories.value.map((category) => ({
+  ...category,
+  path: categoryPath(category.id),
+})))
+
+function categoryPath(categoryId) {
+  if (!categoryId) return ''
+  const byId = new Map(categories.value.map((category) => [category.id, category]))
+  const parts = []
+  const visited = new Set()
+  let category = byId.get(categoryId)
+  while (category && !visited.has(category.id)) {
+    visited.add(category.id)
+    parts.unshift(category.name)
+    category = category.parent_id ? byId.get(category.parent_id) : null
+  }
+  return parts.join(' / ')
+}
+
 const recordingActionLabel = computed(() => (
   getRecordingActionLabel(activeSession.value, recorder.isRecording.value)
 ))
@@ -114,9 +145,14 @@ async function loadApp() {
   loading.value = true
   loadFailed.value = false
   try {
-    const [healthResult, sessionResult] = await Promise.all([api.health(), api.sessions()])
+    const [healthResult, sessionResult, categoryResult] = await Promise.all([
+      api.health(),
+      api.sessions(),
+      api.categories(),
+    ])
     health.value = healthResult
     sessions.value = sessionResult
+    categories.value = categoryResult
     activeSession.value = sessions.value[0] || null
   } catch (error) {
     loadFailed.value = true
@@ -146,6 +182,83 @@ async function renameSession({ id, title }) {
   }
 }
 
+async function moveSession({ id, categoryId, sortOrder }) {
+  try {
+    updateSessionInBackground(await api.updateSession(id, {
+      category_id: categoryId,
+      sort_order: sortOrder,
+    }))
+    const categoryName = categories.value.find((category) => category.id === categoryId)?.name
+    showToast(categoryName ? `“${categoryName}” 카테고리로 옮겼습니다.` : '최상위로 옮겼습니다.', 'success')
+  } catch (error) {
+    showToast(error.message)
+  }
+}
+
+async function createCategory({ name, parentId = null, sessionId = '' }) {
+  try {
+    const category = await api.createCategory({ name, parent_id: parentId })
+    categories.value.push(category)
+    if (sessionId) {
+      updateSessionInBackground(await api.updateSession(sessionId, { category_id: category.id }))
+      showToast(`“${category.name}” 카테고리를 만들고 수업을 옮겼습니다.`, 'success')
+    } else {
+      showToast(`“${category.name}” 카테고리를 만들었습니다.`, 'success')
+    }
+    return category
+  } catch (error) {
+    showToast(error.message)
+    return null
+  }
+}
+
+async function renameCategory({ id, name }) {
+  try {
+    const category = await api.updateCategory(id, { name })
+    const index = categories.value.findIndex((item) => item.id === id)
+    if (index >= 0) categories.value.splice(index, 1, category)
+    showToast('카테고리 이름을 변경했습니다.', 'success')
+  } catch (error) {
+    showToast(error.message)
+  }
+}
+
+async function removeCategory(id) {
+  try {
+    const removedCategory = categories.value.find((category) => category.id === id)
+    await api.deleteCategory(id)
+    categories.value = categories.value
+      .filter((category) => category.id !== id)
+      .map((category) => (
+        category.parent_id === id
+          ? { ...category, parent_id: removedCategory?.parent_id || null }
+          : category
+      ))
+    sessions.value = sessions.value.map((session) => (
+      session.category_id === id
+        ? {
+            ...session,
+            category_id: removedCategory?.parent_id || null,
+            session_revision: (session.session_revision || 0) + 1,
+          }
+        : session
+    ))
+    if (activeSession.value?.category_id === id) {
+      activeSession.value = {
+        ...activeSession.value,
+        category_id: removedCategory?.parent_id || null,
+        session_revision: (activeSession.value.session_revision || 0) + 1,
+      }
+    }
+    const destinationName = removedCategory?.parent_id
+      ? categoryPath(removedCategory.parent_id)
+      : '최상위'
+    showToast(`카테고리를 삭제하고 수업은 “${destinationName}”으로 옮겼습니다.`, 'success')
+  } catch (error) {
+    showToast(error.message)
+  }
+}
+
 async function removeSession(id) {
   if (recordingSessionId.value === id) {
     showToast('녹음 중인 수업은 학습을 종료한 뒤 삭제해 주세요.', 'info')
@@ -165,9 +278,34 @@ async function removeSession(id) {
 function openCreateModal() {
   newTitle.value = '새 수업'
   newSourceType.value = 'zoom'
+  newCategoryId.value = ''
+  newCategoryName.value = ''
+  newCategoryParentId.value = ''
+  newCategoryInputOpen.value = false
   newReferenceFiles.value = []
   createModalOpen.value = true
   sidebarOpen.value = false
+}
+
+function toggleNewCategoryInput() {
+  newCategoryInputOpen.value = !newCategoryInputOpen.value
+  if (newCategoryInputOpen.value) newCategoryParentId.value = newCategoryId.value
+}
+
+async function createCategoryFromModal() {
+  const name = newCategoryName.value.trim()
+  if (!name || creatingCategory.value) return
+  creatingCategory.value = true
+  const category = await createCategory({
+    name,
+    parentId: newCategoryParentId.value || null,
+  })
+  if (category) {
+    newCategoryId.value = category.id
+    newCategoryName.value = ''
+    newCategoryInputOpen.value = false
+  }
+  creatingCategory.value = false
 }
 
 function chooseNewSource(sourceType) {
@@ -256,6 +394,7 @@ async function createSession() {
     let referenceConnected = false
     let session = await api.createSession({
       title: newTitle.value.trim(),
+      category_id: newCategoryId.value || null,
       course_name: newSourceType.value === 'youtube' ? 'YouTube' : 'Zoom',
       source_type: newSourceType.value,
     })
@@ -382,12 +521,17 @@ onMounted(async () => {
   <div class="app-shell" :class="{ 'app-shell--sidebar-collapsed': sidebarCollapsed }">
     <AppSidebar
       :sessions="sessions"
+      :categories="categories"
       :active-id="activeSession?.id"
       :open="sidebarOpen"
       @select="selectSession"
       @new="openCreateModal"
       @rename="renameSession"
       @delete="removeSession"
+      @move="moveSession"
+      @create-category="createCategory"
+      @rename-category="renameCategory"
+      @delete-category="removeCategory"
       @close="sidebarOpen = false"
       @collapse="sidebarCollapsed = true"
     />
@@ -430,7 +574,10 @@ onMounted(async () => {
       <div v-if="activeSession" class="content-grid">
         <section class="lesson-column">
           <div class="lesson-heading">
-            <h1>{{ activeSession.title }}</h1>
+            <div class="lesson-title-block">
+              <p class="lesson-category"><Folder :size="13" /> {{ activeCategoryName }}</p>
+              <h1>{{ activeSession.title }}</h1>
+            </div>
             <div class="lesson-heading-meta">
               <p class="lesson-date"><CalendarDays :size="14" /> {{ sessionDate }}</p>
               <div class="reference-controls">
@@ -524,6 +671,30 @@ onMounted(async () => {
             <span>수업 제목</span>
             <input v-model="newTitle" maxlength="100" autofocus placeholder="예: Spring Security 기초" />
           </label>
+          <div class="category-select-label">
+            <span>카테고리 <small>선택 사항</small></span>
+            <div class="category-picker-row">
+              <select v-model="newCategoryId" aria-label="카테고리 선택">
+                <option value="">최상위</option>
+                <option v-for="category in categoryOptions" :key="category.id" :value="category.id">{{ category.path }}</option>
+              </select>
+              <button type="button" class="new-category-inline-toggle" @click="toggleNewCategoryInput">
+                <Plus :size="15" /> 새 카테고리
+              </button>
+            </div>
+            <div v-if="newCategoryInputOpen" class="new-category-inline">
+              <select v-model="newCategoryParentId" aria-label="새 카테고리의 상위 카테고리">
+                <option value="">최상위 카테고리로 만들기</option>
+                <option v-for="category in categoryOptions" :key="category.id" :value="category.id">
+                  {{ category.path }} 아래에 만들기
+                </option>
+              </select>
+              <input v-model="newCategoryName" maxlength="40" placeholder="예: 백엔드 개발" @keydown.enter.prevent="createCategoryFromModal" />
+              <button type="button" :disabled="!newCategoryName.trim() || creatingCategory" @click="createCategoryFromModal">
+                {{ creatingCategory ? '만드는 중…' : '만들기' }}
+              </button>
+            </div>
+          </div>
           <label class="pdf-upload-label">
             <span>참고 자료 PDF <small>여러 개 선택 가능 · 선택 사항</small></span>
             <input class="pdf-file-input" type="file" accept="application/pdf,.pdf" multiple @change="chooseNewReference" />

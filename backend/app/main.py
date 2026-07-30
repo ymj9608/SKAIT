@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status
@@ -11,6 +12,8 @@ from .schemas import (
     ChatRequest,
     ChatResponse,
     ChatMessage,
+    CategoryCreate,
+    CategoryUpdate,
     ConversationMessage,
     EMPTY_SUMMARY_TEXT,
     HealthResponse,
@@ -19,6 +22,7 @@ from .schemas import (
     SessionCreate,
     SessionUpdate,
     StatusUpdate,
+    StudyCategory,
     StudyMaterial,
     SummaryBatchUpdate,
     SummaryCard,
@@ -403,11 +407,51 @@ async def list_sessions() -> list[LectureSession]:
     return repository().list()
 
 
+@app.get("/api/categories", response_model=list[StudyCategory])
+async def list_categories() -> list[StudyCategory]:
+    return repository().list_categories()
+
+
+@app.post("/api/categories", response_model=StudyCategory, status_code=201)
+async def create_category(payload: CategoryCreate) -> StudyCategory:
+    if payload.parent_id and not repository().get_category(payload.parent_id):
+        raise HTTPException(status_code=404, detail="상위 카테고리를 찾을 수 없습니다.")
+    try:
+        return repository().create_category(
+            StudyCategory(name=payload.name, parent_id=payload.parent_id)
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="같은 이름의 카테고리가 이미 있습니다.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.patch("/api/categories/{category_id}", response_model=StudyCategory)
+async def update_category(category_id: str, payload: CategoryUpdate) -> StudyCategory:
+    try:
+        category = repository().update_category(category_id, payload.name)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="같은 이름의 카테고리가 이미 있습니다.") from exc
+    if category is None:
+        raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
+    return category
+
+
+@app.delete("/api/categories/{category_id}", status_code=204)
+async def delete_category(category_id: str) -> Response:
+    if not repository().delete_category(category_id):
+        raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.post("/api/sessions", response_model=LectureSession, status_code=201)
 async def create_session(payload: SessionCreate) -> LectureSession:
+    if payload.category_id and not repository().get_category(payload.category_id):
+        raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
     return repository().save(
         LectureSession(
             title=payload.title,
+            category_id=payload.category_id,
             course_name=payload.course_name,
             source_type=payload.source_type,
             source_url=payload.source_url,
@@ -428,8 +472,18 @@ async def get_session(session_id: str) -> LectureSession:
 @app.patch("/api/sessions/{session_id}", response_model=LectureSession)
 async def update_session(session_id: str, payload: SessionUpdate) -> LectureSession:
     session = get_session_or_404(session_id)
-    session.title = payload.title
-    session.title_revision += 1
+    if payload.title is not None:
+        session.title = payload.title
+        session.title_revision += 1
+    if "category_id" in payload.model_fields_set:
+        if payload.category_id and not repository().get_category(payload.category_id):
+            raise HTTPException(status_code=404, detail="카테고리를 찾을 수 없습니다.")
+        session.category_id = payload.category_id
+        session.category_revision += 1
+        session.organization_revision += 1
+    if "sort_order" in payload.model_fields_set:
+        session.sort_order = payload.sort_order
+        session.organization_revision += 1
     return repository().save(session)
 
 

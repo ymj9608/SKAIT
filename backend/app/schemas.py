@@ -240,12 +240,30 @@ class ReferenceDocument(BaseModel):
     uploaded_at: datetime = Field(default_factory=utc_now)
 
 
+class StudyCategory(BaseModel):
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    name: str = Field(min_length=1, max_length=40)
+    parent_id: str | None = Field(default=None, max_length=64)
+    created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def normalize_name(self) -> "StudyCategory":
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("카테고리 이름을 입력해 주세요.")
+        return self
+
+
 class LectureSession(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     session_revision: int = Field(default=0, ge=0)
     title: str = "새 수업"
     title_revision: int = Field(default=0, ge=0, exclude=True)
     summary_notes_revision: int = Field(default=0, ge=0, exclude=True)
+    category_revision: int = Field(default=0, ge=0, exclude=True)
+    organization_revision: int = Field(default=0, ge=0, exclude=True)
+    category_id: str | None = Field(default=None, max_length=64)
+    sort_order: float = Field(default=0, allow_inf_nan=False)
     course_name: str = "SKALA Zoom 수업"
     source_type: Literal["zoom", "youtube", "demo"] = "zoom"
     source_url: str | None = Field(default=None, max_length=2_048)
@@ -330,6 +348,7 @@ class LectureSession(BaseModel):
 
 class SessionCreate(BaseModel):
     title: str = Field(default="새 수업", min_length=1, max_length=100)
+    category_id: str | None = Field(default=None, max_length=64)
     course_name: str = Field(default="SKALA Zoom 수업", min_length=1, max_length=100)
     source_type: Literal["zoom", "youtube"] = "zoom"
     source_url: str | None = Field(default=None, max_length=2_048)
@@ -359,14 +378,41 @@ class SessionCreate(BaseModel):
 
 
 class SessionUpdate(BaseModel):
-    title: str = Field(min_length=1, max_length=100)
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    category_id: str | None = Field(default=None, max_length=64)
+    sort_order: float | None = Field(default=None, allow_inf_nan=False)
 
     @model_validator(mode="after")
-    def normalize_title(self) -> "SessionUpdate":
-        self.title = self.title.strip()
-        if not self.title:
-            raise ValueError("수업 제목을 입력해 주세요.")
+    def normalize_update(self) -> "SessionUpdate":
+        if (
+            self.title is None
+            and "category_id" not in self.model_fields_set
+            and "sort_order" not in self.model_fields_set
+        ):
+            raise ValueError("수정할 수업 정보를 입력해 주세요.")
+        if "sort_order" in self.model_fields_set and self.sort_order is None:
+            raise ValueError("올바른 수업 순서를 입력해 주세요.")
+        if self.title is not None:
+            self.title = self.title.strip()
+            if not self.title:
+                raise ValueError("수업 제목을 입력해 주세요.")
         return self
+
+
+class CategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    parent_id: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def normalize_name(self) -> "CategoryCreate":
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("카테고리 이름을 입력해 주세요.")
+        return self
+
+
+class CategoryUpdate(CategoryCreate):
+    pass
 
 
 class TranscriptCreate(BaseModel):

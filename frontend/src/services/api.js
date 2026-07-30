@@ -29,6 +29,12 @@ async function request(path, options = {}) {
 
 export const api = {
   health: () => request('/health'),
+  categories: () => request('/categories'),
+  createCategory: (payload) =>
+    request('/categories', { method: 'POST', body: JSON.stringify(payload) }),
+  updateCategory: (id, payload) =>
+    request(`/categories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteCategory: (id) => request(`/categories/${id}`, { method: 'DELETE' }),
   sessions: () => request('/sessions'),
   session: (id) => request(`/sessions/${id}`),
   createSession: (payload) =>

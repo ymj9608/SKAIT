@@ -28,7 +28,7 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  health: () => request('/health'),
+  health: (options = {}) => request('/health', options),
   categories: () => request('/categories'),
   createCategory: (payload) =>
     request('/categories', { method: 'POST', body: JSON.stringify(payload) }),

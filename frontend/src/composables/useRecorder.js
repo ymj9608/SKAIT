@@ -149,7 +149,7 @@ export function useRecorder(onChunk, onCaptureEnded) {
       }
 
       // 무음만 들어 있던 조각은 Whisper로 보내지 않습니다.
-      if (chunks.length && chunkHasSound) {
+      if (stopReason !== 'discard' && chunks.length && chunkHasSound) {
         pendingUploads += 1
         isProcessing.value = true
         try {
@@ -304,7 +304,24 @@ export function useRecorder(onChunk, onCaptureEnded) {
     return stopPromise
   }
 
-  onBeforeUnmount(stop)
+  function abort() {
+    if (isRecording.value) {
+      elapsed.value = baseSeconds + (Date.now() - startedAt) / 1000
+    }
+    isRecording.value = false
+    clearInterval(clockInterval)
+    clearTimeout(chunkTimeout)
+    stopVoiceActivityDetection()
+    if (recorder?.state === 'recording') {
+      stopCurrentChunk?.('discard')
+    }
+    releaseTracks()
+    stopResolver?.()
+    stopResolver = null
+    stopPromise = null
+  }
+
+  onBeforeUnmount(abort)
 
   return {
     isRecording,
@@ -315,5 +332,6 @@ export function useRecorder(onChunk, onCaptureEnded) {
     source,
     start,
     stop,
+    abort,
   }
 }

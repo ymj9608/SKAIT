@@ -2416,6 +2416,10 @@ class StudyAssistant(ABC):
     async def is_ready(self) -> bool:
         return True
 
+    async def close(self) -> None:
+        """외부 모델 런타임을 사용하는 구현체의 종료 자원을 정리합니다."""
+        return None
+
     @abstractmethod
     async def refine_transcript(
         self,
@@ -3019,6 +3023,22 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
         return self.model in installed or (
             ":" not in self.model and f"{self.model}:latest" in installed
         )
+
+    async def close(self) -> None:
+        """SKAIT 종료 시 Ollama 서버는 유지하고 로드된 모델만 즉시 내립니다."""
+        try:
+            await asyncio.to_thread(
+                self._request_json,
+                "/api/generate",
+                {
+                    "model": self.model,
+                    "keep_alive": 0,
+                },
+                10,
+            )
+        except Exception as exc:
+            # Ollama가 먼저 종료됐거나 연결할 수 없어도 앱 종료를 막지 않습니다.
+            logger.info("ollama model unload skipped (%s): %s", self.model, exc)
 
 
 def build_study_assistant(settings: Settings) -> StudyAssistant:

@@ -83,7 +83,12 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        app.state.repository.close()
+        try:
+            assistant = app.state.assistant
+            if assistant is not None:
+                await assistant.close()
+        finally:
+            app.state.repository.close()
 
 
 app = FastAPI(

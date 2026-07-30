@@ -199,6 +199,49 @@ def ensure_ollama(
         )
 
 
+def unload_ollama_model(env_values: dict[str, str]) -> bool:
+    """공유 Ollama 서버는 유지하면서 SKAIT가 사용한 모델만 메모리에서 내립니다."""
+    if env_values.get("LLM_PROVIDER", "ollama").lower() != "ollama":
+        return False
+    ollama = shutil.which("ollama")
+    if not ollama:
+        return False
+    base_url = env_values.get(
+        "OLLAMA_BASE_URL",
+        "http://127.0.0.1:11434",
+    ).rstrip("/")
+    if not ollama_is_ready(base_url):
+        return False
+    process_env = dict(os.environ)
+    process_env["OLLAMA_HOST"] = base_url
+    model = env_values.get("OLLAMA_MODEL", "qwen3:8b")
+    try:
+        result = subprocess.run(
+            [ollama, "stop", model],
+            env=process_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    print(f"Ollama 모델 종료: {model}")
+    return True
+
+
+def install_shutdown_signal_handlers() -> None:
+    """터미널 종료 신호도 KeyboardInterrupt와 같은 정리 경로로 보냅니다."""
+    def request_shutdown(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    for signal_name in ("SIGTERM", "SIGHUP"):
+        shutdown_signal = getattr(signal, signal_name, None)
+        if shutdown_signal is not None:
+            signal.signal(shutdown_signal, request_shutdown)
+
+
 def start_backend(
     env_values: dict[str, str], processes: list[subprocess.Popen[bytes]]
 ) -> subprocess.Popen[bytes] | None:
@@ -305,6 +348,8 @@ def monitor(processes: list[subprocess.Popen[bytes]]) -> None:
 def main() -> int:
     args = parse_args()
     processes: list[subprocess.Popen[bytes]] = []
+    env_values: dict[str, str] = {}
+    install_shutdown_signal_handlers()
     try:
         env_values = read_env()
         ensure_ollama(env_values, processes)
@@ -324,6 +369,7 @@ def main() -> int:
     finally:
         for process in reversed(processes):
             stop_process(process)
+        unload_ollama_model(env_values)
     return 0
 
 

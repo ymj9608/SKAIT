@@ -985,6 +985,28 @@ class StudyServiceTests(unittest.TestCase):
         }
         self.assertTrue(asyncio.run(assistant.is_ready()))
 
+    def test_ollama_close_unloads_model_immediately(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b")
+        requests = []
+
+        def record_request(*args):
+            requests.append(args)
+            return {"done": True}
+
+        assistant._request_json = record_request
+        asyncio.run(assistant.close())
+
+        self.assertEqual(
+            requests,
+            [
+                (
+                    "/api/generate",
+                    {"model": "qwen3:8b", "keep_alive": 0},
+                    10,
+                )
+            ],
+        )
+
     def test_mlx_stt_cleans_up_temporary_audio(self) -> None:
         captured_path = None
 

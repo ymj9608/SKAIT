@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CalendarDays,
   CircleStop,
@@ -68,6 +68,9 @@ const toast = ref(null)
 let toastTimer = null
 const recordingSessionId = ref(null)
 let finalizationPromise = null
+const RECORDING_HEALTH_INTERVAL_MILLISECONDS = 2_000
+const RECORDING_HEALTH_TIMEOUT_MILLISECONDS = 1_500
+const RECORDING_HEALTH_FAILURE_LIMIT = 2
 
 function upsertSession(session) {
   const index = sessions.value.findIndex((item) => item.id === session.id)
@@ -111,6 +114,85 @@ const recorder = useRecorder(
   },
   async (elapsedSeconds) => finalizeRecording(elapsedSeconds),
 )
+
+let recordingHealthTimer = null
+let recordingHealthCheckRunning = false
+let recordingHealthFailures = 0
+let recordingHealthGeneration = 0
+let recordingHealthController = null
+
+function stopRecordingHealthMonitor() {
+  recordingHealthGeneration += 1
+  recordingHealthController?.abort()
+  recordingHealthController = null
+  window.clearInterval(recordingHealthTimer)
+  recordingHealthTimer = null
+  recordingHealthCheckRunning = false
+  recordingHealthFailures = 0
+}
+
+async function checkRecordingServerConnection() {
+  if (!recorder.isRecording.value || recordingHealthCheckRunning) return
+  const monitorGeneration = recordingHealthGeneration
+  recordingHealthCheckRunning = true
+  const controller = new AbortController()
+  recordingHealthController = controller
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    RECORDING_HEALTH_TIMEOUT_MILLISECONDS,
+  )
+  try {
+    await api.health({ signal: controller.signal })
+    if (monitorGeneration !== recordingHealthGeneration) return
+    recordingHealthFailures = 0
+  } catch {
+    if (
+      monitorGeneration !== recordingHealthGeneration
+      || !recorder.isRecording.value
+    ) return
+    recordingHealthFailures += 1
+    if (recordingHealthFailures < RECORDING_HEALTH_FAILURE_LIMIT) return
+
+    const interruptedSessionId = recordingSessionId.value
+    const interruptedDuration = recorder.elapsed.value
+    recorder.abort()
+    recordingSessionId.value = null
+    if (activeSession.value?.id === interruptedSessionId) {
+      const interruptedSession = {
+        ...activeSession.value,
+        status: 'recording',
+        duration_seconds: Math.max(
+          Number(activeSession.value.duration_seconds || 0),
+          interruptedDuration,
+        ),
+      }
+      activeSession.value = interruptedSession
+      upsertSession(interruptedSession)
+    }
+    showToast('서버 연결이 종료되어 녹음과 화면 공유를 중지했습니다. 서버를 다시 실행한 뒤 학습을 재개해 주세요.')
+  } finally {
+    window.clearTimeout(timeout)
+    if (recordingHealthController === controller) {
+      recordingHealthController = null
+    }
+    if (monitorGeneration === recordingHealthGeneration) {
+      recordingHealthCheckRunning = false
+    }
+  }
+}
+
+function startRecordingHealthMonitor() {
+  stopRecordingHealthMonitor()
+  recordingHealthTimer = window.setInterval(
+    checkRecordingServerConnection,
+    RECORDING_HEALTH_INTERVAL_MILLISECONDS,
+  )
+}
+
+watch(recorder.isRecording, (isRecording) => {
+  if (isRecording) startRecordingHealthMonitor()
+  else stopRecordingHealthMonitor()
+})
 
 watch(recorder.error, (message) => {
   if (message) showToast(message)
@@ -577,7 +659,7 @@ async function toggleRecording() {
       }),
     )
   } catch (error) {
-    await recorder.stop()
+    recorder.abort()
     recordingSessionId.value = null
     showToast(error.message)
   }
@@ -612,6 +694,8 @@ async function updateSummaries(payload) {
 onMounted(async () => {
   await loadApp()
 })
+
+onBeforeUnmount(stopRecordingHealthMonitor)
 
 </script>
 

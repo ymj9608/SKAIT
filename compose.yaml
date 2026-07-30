@@ -5,7 +5,7 @@ services:
       - path: ./backend/.env
         required: false
     environment:
-      DATABASE_FILE: /app/data/reclass.sqlite3
+      DATABASE_FILE: /app/data/skait.sqlite3
       DATA_FILE: /app/data/sessions.json
       CORS_ORIGINS: http://localhost:8080
     volumes:

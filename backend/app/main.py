@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .demo import build_demo_session
-from .repository import SessionRepository
+from .repository import SessionRepository, migrate_legacy_database
 from .schemas import (
     ChatRequest,
     ChatResponse,
@@ -49,6 +49,7 @@ MAX_REFERENCE_DOCUMENTS = 20
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    migrate_legacy_database(settings.database_file)
     app.state.repository = SessionRepository(
         settings.database_file,
         legacy_json_file=settings.data_file,

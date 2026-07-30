@@ -11,6 +11,47 @@ from .schemas import ConversationMessage, LectureSession, StudyMaterial, Transcr
 LEGACY_IMPORT_MARKER = "legacy_json_import_v1"
 TRANSCRIPT_REFINEMENT_VERSION = 1
 MAX_STORED_KEYWORDS = 6
+LEGACY_DATABASE_FILENAME = "reclass.sqlite3"
+
+
+def migrate_legacy_database(
+    database_file: Path,
+    legacy_database_file: Path | None = None,
+) -> bool:
+    """기존 reclass.sqlite3를 데이터 손실 없이 새 기본 파일명으로 이전합니다."""
+    target = Path(database_file)
+    if legacy_database_file is None and target.name != "skait.sqlite3":
+        return False
+    legacy = (
+        Path(legacy_database_file)
+        if legacy_database_file is not None
+        else target.with_name(LEGACY_DATABASE_FILENAME)
+    )
+    if target == legacy or target.exists() or not legacy.is_file():
+        return False
+
+    connection = sqlite3.connect(legacy, timeout=5)
+    try:
+        busy, _, _ = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if busy:
+            raise RuntimeError(
+                "기존 reclass.sqlite3가 다른 서버에서 사용 중입니다. "
+                "실행 중인 SKAIT 서버를 종료한 뒤 다시 시작해 주세요."
+            )
+    except sqlite3.Error as exc:
+        raise RuntimeError(
+            f"기존 학습 DB를 확인하지 못했습니다: {legacy}"
+        ) from exc
+    finally:
+        connection.close()
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    legacy.replace(target)
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{legacy}{suffix}")
+        if sidecar.exists():
+            sidecar.unlink()
+    return True
 
 
 class SessionRepository:

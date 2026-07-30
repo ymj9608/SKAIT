@@ -6,7 +6,11 @@ import unittest
 
 from pydantic import ValidationError
 
-from app.repository import LEGACY_IMPORT_MARKER, SessionRepository
+from app.repository import (
+    LEGACY_IMPORT_MARKER,
+    SessionRepository,
+    migrate_legacy_database,
+)
 from app.schemas import (
     ConversationMessage,
     LearningItem,
@@ -69,6 +73,55 @@ def sample_session(session_id: str = "session-1", title: str = "테스트 수업
 
 
 class SessionRepositoryTests(unittest.TestCase):
+    def test_legacy_database_is_renamed_without_losing_sessions(self) -> None:
+        with TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            legacy_database = directory_path / "reclass.sqlite3"
+            database = directory_path / "skait.sqlite3"
+            repository = SessionRepository(legacy_database)
+            repository.save(sample_session())
+            repository.close()
+
+            self.assertTrue(migrate_legacy_database(database))
+            self.assertFalse(legacy_database.exists())
+            self.assertTrue(database.exists())
+
+            migrated = SessionRepository(database)
+            self.assertEqual(migrated.get("session-1").title, "테스트 수업")
+            self.assertEqual(len(migrated.get("session-1").segments), 2)
+            migrated.close()
+
+    def test_existing_skait_database_is_never_overwritten_by_legacy_database(self) -> None:
+        with TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            legacy_database = directory_path / "reclass.sqlite3"
+            database = directory_path / "skait.sqlite3"
+
+            legacy = SessionRepository(legacy_database)
+            legacy.save(sample_session(title="이전 DB 수업"))
+            legacy.close()
+            current = SessionRepository(database)
+            current.save(sample_session(title="현재 DB 수업"))
+            current.close()
+
+            self.assertFalse(migrate_legacy_database(database))
+            self.assertTrue(legacy_database.exists())
+
+            reopened = SessionRepository(database)
+            self.assertEqual(reopened.get("session-1").title, "현재 DB 수업")
+            reopened.close()
+
+    def test_custom_database_path_does_not_claim_the_legacy_default_database(self) -> None:
+        with TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            legacy_database = directory_path / "reclass.sqlite3"
+            custom_database = directory_path / "custom.sqlite3"
+            legacy_database.touch()
+
+            self.assertFalse(migrate_legacy_database(custom_database))
+            self.assertTrue(legacy_database.exists())
+            self.assertFalse(custom_database.exists())
+
     def test_all_learning_items_are_preserved_during_storage(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "reclass.sqlite3"

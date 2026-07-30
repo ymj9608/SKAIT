@@ -217,6 +217,16 @@ def prepare_environment_files(installer: Installer) -> dict[str, str]:
         print("  Apple Silicon이 아니므로 STT_PROVIDER=faster_whisper로 설정했습니다.")
 
     values = read_env(backend_env, BACKEND_DIR / ".env.example")
+    database_file = Path(values.get("DATABASE_FILE", "data/skait.sqlite3"))
+    if database_file.name == "reclass.sqlite3":
+        migrated_database_file = str(database_file.with_name("skait.sqlite3"))
+        print(
+            "  설정 변경: DATABASE_FILE="
+            f"{values['DATABASE_FILE']} → {migrated_database_file}"
+        )
+        if not installer.dry_run:
+            replace_env_value(backend_env, "DATABASE_FILE", migrated_database_file)
+        values["DATABASE_FILE"] = migrated_database_file
     if backend_created and not is_apple_silicon():
         values["STT_PROVIDER"] = "faster_whisper"
     return values

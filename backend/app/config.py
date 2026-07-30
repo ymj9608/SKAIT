@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     learning_item_batch_seconds: int = Field(default=30, ge=15, le=60)
     summary_batch_seconds: int = Field(default=120, ge=30, le=600)
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    database_file: Path = Path("data/reclass.sqlite3")
+    database_file: Path = Path("data/skait.sqlite3")
     # 이전 버전의 JSON 기록을 최초 한 번 가져오기 위한 경로입니다.
     # DATA_FILE 환경변수 이름은 기존 사용자의 설정과 호환되도록 유지합니다.
     data_file: Path = Path("data/sessions.json")
@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_ollama_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
+
+    @field_validator("database_file")
+    @classmethod
+    def normalize_legacy_database_file(cls, value: Path) -> Path:
+        """기존 .env의 기본 DB 이름도 새 파일명으로 자동 전환합니다."""
+        if value.name == "reclass.sqlite3":
+            return value.with_name("skait.sqlite3")
+        return value
 
 
 @lru_cache

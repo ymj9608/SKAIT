@@ -52,7 +52,7 @@ python3 open.py
 
 ## 기록과 업데이트
 
-수업과 대화 기록은 `backend/data/skait.sqlite3`에 저장되며 서버를 다시 실행하거나 코드를 업데이트해도 유지됩니다. 기존 `reclass.sqlite3` 기록은 업데이트 후 처음 실행할 때 자동으로 `skait.sqlite3`로 이전됩니다.
+수업과 대화 기록은 `backend/data/skait.sqlite3`에 저장되며 서버를 다시 실행하거나 코드를 업데이트해도 유지됩니다.
 
 새 버전을 받으려면 프로젝트 폴더에서 실행합니다.
 

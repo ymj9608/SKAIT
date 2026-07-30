@@ -74,6 +74,7 @@ class SummaryUpdateApiTests(unittest.TestCase):
 
         self.assertEqual(result.material.summary_cards[0].topics[0].title, "수정한 주제")
         self.assertEqual(result.material.summary_notes[0].text, "수정한 직접 요약")
+        self.assertEqual(result.summary_notes_revision, 1)
         self.assertEqual(result.material.summary, "수정한 요약입니다.")
         self.assertIsNotNone(repository.saved)
 
@@ -93,6 +94,7 @@ class SummaryUpdateApiTests(unittest.TestCase):
 
         self.assertEqual(result.material.summary_notes[-1].text, "내가 직접 추가한 요약")
         self.assertIsNotNone(result.material.summary_notes[-1].created_at)
+        self.assertEqual(result.summary_notes_revision, 1)
         self.assertIsNotNone(repository.saved)
 
     def test_deletes_generated_and_personal_summaries_together(self) -> None:
@@ -110,6 +112,7 @@ class SummaryUpdateApiTests(unittest.TestCase):
 
         self.assertEqual(result.material.summary_cards, [])
         self.assertEqual(result.material.summary_notes, [])
+        self.assertEqual(result.summary_notes_revision, 1)
         self.assertEqual(
             result.material.summary,
             "아직 정리할 수업 내용이 없습니다. 녹음을 시작하거나 텍스트를 추가해 주세요.",

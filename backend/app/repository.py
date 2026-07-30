@@ -90,6 +90,7 @@ class SessionRepository:
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
                     title_revision INTEGER NOT NULL DEFAULT 0,
+                    summary_notes_revision INTEGER NOT NULL DEFAULT 0,
                     course_name TEXT NOT NULL,
                     source_type TEXT NOT NULL
                         CHECK(source_type IN ('zoom', 'youtube', 'demo')),
@@ -185,6 +186,11 @@ class SessionRepository:
                 self._connection.execute(
                     "ALTER TABLE sessions ADD COLUMN title_revision INTEGER NOT NULL DEFAULT 0"
                 )
+            if "summary_notes_revision" not in session_columns:
+                self._connection.execute(
+                    "ALTER TABLE sessions ADD COLUMN summary_notes_revision "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _import_legacy_json_once(self) -> None:
         if not self.legacy_json_file or not self.legacy_json_file.exists():
@@ -254,13 +260,14 @@ class SessionRepository:
         self._connection.execute(
             """
             INSERT INTO sessions(
-                id, title, title_revision, course_name, source_type, source_url, created_at,
-                status, duration_seconds, reference_name, reference_text,
-                references_json, material_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, title, title_revision, summary_notes_revision, course_name,
+                source_type, source_url, created_at, status, duration_seconds,
+                reference_name, reference_text, references_json, material_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 title_revision = excluded.title_revision,
+                summary_notes_revision = excluded.summary_notes_revision,
                 course_name = excluded.course_name,
                 source_type = excluded.source_type,
                 source_url = excluded.source_url,
@@ -276,6 +283,7 @@ class SessionRepository:
                 session.id,
                 session.title,
                 session.title_revision,
+                session.summary_notes_revision,
                 session.course_name,
                 session.source_type,
                 session.source_url,
@@ -386,6 +394,7 @@ class SessionRepository:
             id=row["id"],
             title=row["title"],
             title_revision=row["title_revision"],
+            summary_notes_revision=row["summary_notes_revision"],
             course_name=row["course_name"],
             source_type=row["source_type"],
             source_url=row["source_url"],
@@ -436,7 +445,11 @@ class SessionRepository:
     def _merge_newer_persisted_state(self, snapshot: LectureSession) -> None:
         """오래 실행된 백그라운드 작업이 최신 사용자 상태를 되돌리지 않게 합니다."""
         row = self._connection.execute(
-            "SELECT title, title_revision, material_json FROM sessions WHERE id = ?",
+            """
+            SELECT title, title_revision, summary_notes_revision, material_json
+            FROM sessions
+            WHERE id = ?
+            """,
             (snapshot.id,),
         ).fetchone()
         if not row:
@@ -448,6 +461,14 @@ class SessionRepository:
             snapshot.title_revision = persisted_title_revision
 
         persisted_material = StudyMaterial.model_validate(json.loads(row["material_json"]))
+        persisted_summary_notes_revision = int(row["summary_notes_revision"] or 0)
+        if persisted_summary_notes_revision > snapshot.summary_notes_revision:
+            snapshot.material.summary_notes = [
+                note.model_copy(deep=True)
+                for note in persisted_material.summary_notes
+            ]
+            snapshot.summary_notes_revision = persisted_summary_notes_revision
+
         persisted_quiz_at = persisted_material.quiz_generated_at
         incoming_quiz_at = snapshot.material.quiz_generated_at
         persisted_quiz_is_newer = persisted_quiz_at is not None and (

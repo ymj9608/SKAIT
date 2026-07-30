@@ -704,6 +704,8 @@ async def update_summaries(
         for note in session.material.summary_notes
         if note.id not in deleted_note_ids
     ]
+    if payload.notes or payload.deleted_note_ids:
+        session.summary_notes_revision += 1
 
     refresh_material_digest(session)
     return repository().save(session)
@@ -716,6 +718,7 @@ async def add_summary_note(
 ) -> LectureSession:
     session = get_session_or_404(session_id)
     session.material.summary_notes.append(SummaryNote(text=payload.text))
+    session.summary_notes_revision += 1
     return repository().save(session)
 
 

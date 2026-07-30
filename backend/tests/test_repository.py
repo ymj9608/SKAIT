@@ -182,6 +182,59 @@ class SessionRepositoryTests(unittest.TestCase):
             self.assertEqual(saved.material.quiz_questions[0].id, "latest-quiz")
             self.assertEqual(saved.duration_seconds, 90)
 
+    def test_stale_background_save_preserves_newer_personal_summary_note(self) -> None:
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "skait.sqlite3"
+            repository = SessionRepository(database)
+            session = repository.save(sample_session())
+            stale_background_snapshot = repository.get(session.id)
+
+            updated = repository.get(session.id)
+            updated.material.summary_notes.append(
+                SummaryNote(id="latest-note", text="JPA 시작")
+            )
+            updated.summary_notes_revision += 1
+            repository.save(updated)
+
+            stale_background_snapshot.duration_seconds = 90
+            saved = repository.save(stale_background_snapshot)
+            repository.close()
+
+            reopened = SessionRepository(database)
+            restored = reopened.get(session.id)
+            reopened.close()
+
+            self.assertEqual(saved.summary_notes_revision, 1)
+            self.assertEqual(
+                [note.text for note in saved.material.summary_notes],
+                ["JPA 시작"],
+            )
+            self.assertEqual(
+                [note.text for note in restored.material.summary_notes],
+                ["JPA 시작"],
+            )
+
+    def test_stale_background_save_does_not_restore_deleted_personal_summary_note(self) -> None:
+        with TemporaryDirectory() as directory:
+            repository = SessionRepository(Path(directory) / "skait.sqlite3")
+            session = sample_session()
+            session.material.summary_notes.append(
+                SummaryNote(id="deleted-note", text="삭제할 직접 요약")
+            )
+            session = repository.save(session)
+            stale_background_snapshot = repository.get(session.id)
+
+            updated = repository.get(session.id)
+            updated.material.summary_notes = []
+            updated.summary_notes_revision += 1
+            repository.save(updated)
+
+            saved = repository.save(stale_background_snapshot)
+            repository.close()
+
+            self.assertEqual(saved.summary_notes_revision, 1)
+            self.assertEqual(saved.material.summary_notes, [])
+
     def test_chat_messages_survive_session_saves_and_restarts(self) -> None:
         with TemporaryDirectory() as directory:
             database = Path(directory) / "reclass.sqlite3"

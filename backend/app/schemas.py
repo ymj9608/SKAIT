@@ -244,6 +244,7 @@ class LectureSession(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     title: str = "새 수업"
     title_revision: int = Field(default=0, ge=0, exclude=True)
+    summary_notes_revision: int = Field(default=0, ge=0, exclude=True)
     course_name: str = "SKALA Zoom 수업"
     source_type: Literal["zoom", "youtube", "demo"] = "zoom"
     source_url: str | None = Field(default=None, max_length=2_048)

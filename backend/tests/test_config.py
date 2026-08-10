@@ -1,8 +1,6 @@
 from pathlib import Path
 import unittest
 
-from pydantic import ValidationError
-
 from app.config import Settings
 
 
@@ -34,17 +32,10 @@ class DatabaseFileSettingsTests(unittest.TestCase):
             Path("/tmp/skait-test/custom.sqlite3"),
         )
 
-    def test_ollama_performance_mode_defaults_to_balanced(self) -> None:
+    def test_default_ollama_model_uses_qwen_3_5_4b(self) -> None:
         settings = Settings(_env_file=None)
 
-        self.assertEqual(settings.ollama_performance_mode, "balanced")
-
-    def test_ollama_performance_mode_is_normalized_and_validated(self) -> None:
-        settings = Settings(_env_file=None, ollama_performance_mode=" ECO ")
-
-        self.assertEqual(settings.ollama_performance_mode, "eco")
-        with self.assertRaises(ValidationError):
-            Settings(_env_file=None, ollama_performance_mode="unlimited")
+        self.assertEqual(settings.ollama_model, "qwen3.5:4b-q4_K_M")
 
 
 if __name__ == "__main__":

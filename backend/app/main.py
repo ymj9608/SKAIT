@@ -32,8 +32,8 @@ from .schemas import (
     EMPTY_SUMMARY_TEXT,
     HealthResponse,
     LectureSession,
-    LlmPerformanceResponse,
-    LlmPerformanceUpdate,
+    LlmModelResponse,
+    LlmModelUpdate,
     ReferenceDocument,
     SessionCreate,
     SessionUpdate,
@@ -152,6 +152,7 @@ async def lifespan(app: FastAPI):
     app.state.stt_error = None
     app.state.assistant = None
     app.state.llm_error = None
+    app.state.llm_model_change_in_progress = False
     app.state.active_ai_tasks = set()
     app.state.client_connections = ClientConnectionTracker(CLIENT_IDLE_SECONDS)
     app.state.client_monitor_task = None
@@ -209,6 +210,11 @@ def get_session_or_404(session_id: str) -> LectureSession:
 
 
 def assistant_or_503() -> StudyAssistant:
+    if getattr(app.state, "llm_model_change_in_progress", False):
+        raise HTTPException(
+            status_code=503,
+            detail="로컬 LLM 모델을 변경하고 있습니다. 잠시 후 다시 시도해 주세요.",
+        )
     assistant = app.state.assistant
     if not assistant:
         raise HTTPException(
@@ -502,8 +508,6 @@ async def health() -> HealthResponse:
         llm_model=getattr(assistant, "model_name", None),
         stt_ready=stt_ready,
         llm_ready=llm_ready,
-        llm_performance_mode=getattr(assistant, "performance_mode", None),
-        llm_context_window=getattr(assistant, "context_window", None),
         learning_item_batch_seconds=settings.learning_item_batch_seconds,
         summary_batch_seconds=settings.summary_batch_seconds,
         stt_error=app.state.stt_error if not stt_ready else None,
@@ -511,18 +515,13 @@ async def health() -> HealthResponse:
     )
 
 
-@app.patch(
-    "/api/settings/llm-performance",
-    response_model=LlmPerformanceResponse,
-)
-async def update_llm_performance(
-    payload: LlmPerformanceUpdate,
-) -> LlmPerformanceResponse:
+@app.patch("/api/settings/llm-model", response_model=LlmModelResponse)
+async def update_llm_model(payload: LlmModelUpdate) -> LlmModelResponse:
     assistant = assistant_or_503()
     if not isinstance(assistant, OllamaStudyAssistant):
         raise HTTPException(
             status_code=400,
-            detail="로컬 LLM 성능 모드는 Ollama를 사용할 때만 변경할 수 있습니다.",
+            detail="로컬 LLM 모델은 Ollama를 사용할 때만 변경할 수 있습니다.",
         )
     active_tasks = [
         task
@@ -532,19 +531,29 @@ async def update_llm_performance(
     if active_tasks:
         raise HTTPException(
             status_code=409,
-            detail="진행 중인 AI 작업이 끝난 뒤 성능 모드를 변경해 주세요.",
+            detail="진행 중인 AI 작업이 끝난 뒤 모델을 변경해 주세요.",
         )
+    if assistant.model == payload.model:
+        return LlmModelResponse(model=assistant.model, downloaded=False)
 
-    changed = assistant.set_performance_mode(payload.mode)
-    if changed:
-        # 기존 컨텍스트 크기로 올라간 모델을 먼저 내려야 다음 요청부터
-        # 줄어든 메모리 설정이 확실하게 적용됩니다.
+    app.state.llm_model_change_in_progress = True
+    try:
+        try:
+            downloaded = await assistant.install_model(payload.model)
+        except Exception as exc:
+            logger.warning("ollama model download failed (%s): %s", payload.model, exc)
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"{payload.model} 모델을 다운로드하지 못했습니다. "
+                    "인터넷 연결과 Ollama 상태를 확인해 주세요."
+                ),
+            ) from exc
         await assistant.close()
-    return LlmPerformanceResponse(
-        mode=assistant.performance_mode,
-        context_window=assistant.context_window,
-        keep_alive=assistant.keep_alive,
-    )
+        assistant.set_model(payload.model)
+        return LlmModelResponse(model=assistant.model, downloaded=downloaded)
+    finally:
+        app.state.llm_model_change_in_progress = False
 
 
 @app.websocket("/api/client/connection")

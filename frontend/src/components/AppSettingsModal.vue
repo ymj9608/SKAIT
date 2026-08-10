@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   Cpu,
   RotateCcw,
@@ -17,23 +17,42 @@ const props = defineProps({
 
 const emit = defineEmits(['cancel', 'close', 'reset-display', 'save', 'update'])
 const modal = ref(null)
-const performanceModes = [
+const qwenModels = [
   {
-    value: 'eco',
-    label: '절전',
-    detail: '2K · 응답 직후 해제 · 1개씩 처리',
+    value: 'qwen3.5:0.8b-q8_0',
+    label: 'Qwen 3.5 0.8B · 실험용',
+    detail: '약 1.0GB · 가장 가볍지만 전체 기능의 품질 저하가 큼',
   },
   {
-    value: 'balanced',
-    label: '균형',
-    detail: '4K · 2분 유지 · 1개씩 처리',
+    value: 'qwen3.5:2b-q4_K_M',
+    label: 'Qwen 3.5 2B',
+    detail: '약 1.9GB · 가볍지만 요약 품질이 낮을 수 있음',
   },
   {
-    value: 'performance',
-    label: '성능 우선',
-    detail: '8K 컨텍스트 · 15분간 메모리 유지',
+    value: 'qwen3.5:4b-q4_K_M',
+    label: 'Qwen 3.5 4B · 기본',
+    detail: '약 3.4GB · 속도와 품질의 균형',
+  },
+  {
+    value: 'qwen3.5:9b-q4_K_M',
+    label: 'Qwen 3.5 9B · 품질 우선',
+    detail: '약 6.6GB · 답변 품질 우선, 연산량과 발열 증가',
   },
 ]
+
+const modelOptions = computed(() => {
+  if (!props.settings.llmModel || qwenModels.some((item) => item.value === props.settings.llmModel)) {
+    return qwenModels
+  }
+  return [
+    {
+      value: props.settings.llmModel,
+      label: `${props.settings.llmModel} · 기존 모델`,
+      detail: 'Qwen 3.5 모델을 선택하면 다시 선택할 수 없습니다.',
+    },
+    ...qwenModels,
+  ]
+})
 
 function updateSetting(key, value) {
   emit('update', { key, value })
@@ -98,25 +117,25 @@ onMounted(() => modal.value?.focus())
         <section v-if="props.llmProvider === 'ollama'" class="settings-section">
           <div class="settings-section-heading">
             <Cpu :size="18" />
-            <h3>로컬 LLM 자원 사용량</h3>
+            <h3>로컬 LLM 모델</h3>
           </div>
-          <div class="llm-performance-options" role="radiogroup" aria-label="로컬 LLM 자원 사용량">
+          <div class="llm-model-options" role="radiogroup" aria-label="로컬 LLM 모델">
             <button
-              v-for="mode in performanceModes"
-              :key="mode.value"
+              v-for="model in modelOptions"
+              :key="model.value"
               type="button"
               role="radio"
-              :aria-checked="settings.llmPerformanceMode === mode.value"
-              :class="{ active: settings.llmPerformanceMode === mode.value }"
-              @click="updateSetting('llmPerformanceMode', mode.value)"
+              :aria-checked="settings.llmModel === model.value"
+              :class="{ active: settings.llmModel === model.value }"
+              @click="updateSetting('llmModel', model.value)"
             >
-              <strong>{{ mode.label }}</strong>
-              <span>{{ mode.detail }}</span>
+              <strong>{{ model.label }}</strong>
+              <span>{{ model.detail }}</span>
             </button>
           </div>
-          <p class="llm-performance-help">
-            절전 모드는 발열과 대기 RAM을 줄이는 대신 응답이 느려지거나 긴 자료의 품질이 낮아질 수 있습니다.
-            모델 실행 중에는 모델 자체 메모리가 필요합니다.
+          <p class="llm-model-help">
+            선택한 모델 하나를 전사 보정·요약·용어 탐지·퀴즈·질문 답변에 모두 사용합니다.
+            기능을 바꿀 때 모델을 다시 불러오지 않습니다. 0.8B·2B는 저사양·실험용입니다.
           </p>
         </section>
 

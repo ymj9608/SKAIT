@@ -577,19 +577,21 @@ class HealthResponse(BaseModel):
     llm_model: str | None = None
     stt_ready: bool
     llm_ready: bool
-    llm_performance_mode: Literal["eco", "balanced", "performance"] | None = None
-    llm_context_window: int | None = None
     learning_item_batch_seconds: int = 30
     summary_batch_seconds: int = 120
     stt_error: str | None = None
     llm_error: str | None = None
 
 
-class LlmPerformanceUpdate(BaseModel):
-    mode: Literal["eco", "balanced", "performance"]
+class LlmModelUpdate(BaseModel):
+    model: Literal[
+        "qwen3.5:0.8b-q8_0",
+        "qwen3.5:2b-q4_K_M",
+        "qwen3.5:4b-q4_K_M",
+        "qwen3.5:9b-q4_K_M",
+    ]
 
 
-class LlmPerformanceResponse(BaseModel):
-    mode: Literal["eco", "balanced", "performance"]
-    context_window: int
-    keep_alive: str | int
+class LlmModelResponse(BaseModel):
+    model: str
+    downloaded: bool = False

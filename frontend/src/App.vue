@@ -23,7 +23,7 @@ import TranscriptPanel from './components/TranscriptPanel.vue'
 import { useRecorder } from './composables/useRecorder'
 import { api } from './services/api'
 import {
-  hasStoredLlmPerformanceMode,
+  hasStoredLlmModel,
   loadAppSettings,
   resetAppSettings,
   saveAppSettings,
@@ -50,7 +50,7 @@ const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const settingsModalOpen = ref(false)
 const settingsSaving = ref(false)
-const hasSavedLlmPerformanceMode = ref(hasStoredLlmPerformanceMode())
+const hasSavedLlmModel = ref(hasStoredLlmModel())
 const appSettings = ref(loadAppSettings())
 const settingsDraft = ref({ ...appSettings.value })
 const createModalOpen = ref(false)
@@ -341,32 +341,45 @@ function cancelSettings() {
   settingsModalOpen.value = false
 }
 
-async function applyLlmPerformanceMode(mode) {
+async function applyLlmModel(model) {
   if (health.value.llm_provider !== 'ollama') return null
-  const result = await api.updateLlmPerformance(mode)
+  const result = await api.updateLlmModel(model)
   health.value = {
     ...health.value,
-    llm_performance_mode: result.mode,
-    llm_context_window: result.context_window,
+    llm_model: result.model,
+    llm_ready: true,
   }
   return result
 }
 
 async function saveSettings() {
   if (settingsSaving.value) return
+  if (
+    recordingSessionId.value
+    && settingsDraft.value.llmModel !== health.value.llm_model
+  ) {
+    showToast('학습을 종료한 뒤 로컬 LLM 모델을 변경해 주세요.', 'info')
+    return
+  }
   settingsSaving.value = true
   try {
+    let modelResult = null
     if (
       health.value.llm_provider === 'ollama'
-      && settingsDraft.value.llmPerformanceMode !== health.value.llm_performance_mode
+      && settingsDraft.value.llmModel !== health.value.llm_model
     ) {
-      await applyLlmPerformanceMode(settingsDraft.value.llmPerformanceMode)
+      modelResult = await applyLlmModel(settingsDraft.value.llmModel)
     }
     appSettings.value = saveAppSettings(settingsDraft.value)
-    hasSavedLlmPerformanceMode.value = true
+    hasSavedLlmModel.value = true
     settingsDraft.value = { ...appSettings.value }
     settingsModalOpen.value = false
-    showToast('설정을 저장했습니다.', 'success')
+    showToast(
+      modelResult?.downloaded
+        ? '새 로컬 LLM 모델을 다운로드하고 적용했습니다.'
+        : '설정을 저장했습니다.',
+      'success',
+    )
   } catch (error) {
     showToast(error.message)
   } finally {
@@ -387,20 +400,20 @@ async function loadApp() {
     sessions.value = sessionResult
     categories.value = categoryResult
     activeSession.value = sessions.value[0] || null
-    if (!hasSavedLlmPerformanceMode.value && healthResult.llm_performance_mode) {
+    if (!hasSavedLlmModel.value && healthResult.llm_model) {
       appSettings.value = {
         ...appSettings.value,
-        llmPerformanceMode: healthResult.llm_performance_mode,
+        llmModel: healthResult.llm_model,
       }
       settingsDraft.value = { ...appSettings.value }
     } else if (
       healthResult.llm_provider === 'ollama'
-      && healthResult.llm_performance_mode !== appSettings.value.llmPerformanceMode
+      && healthResult.llm_model !== appSettings.value.llmModel
     ) {
       try {
-        await applyLlmPerformanceMode(appSettings.value.llmPerformanceMode)
+        await applyLlmModel(appSettings.value.llmModel)
       } catch (error) {
-        showToast(`로컬 LLM 성능 설정을 적용하지 못했습니다. ${error.message}`)
+        showToast(`로컬 LLM 모델 설정을 적용하지 못했습니다. ${error.message}`)
       }
     }
   } catch (error) {

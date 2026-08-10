@@ -678,7 +678,7 @@ class StudyServiceTests(unittest.TestCase):
             _env_file=None,
         )
         self.assertEqual(settings.mlx_whisper_model, "mlx-community/whisper-large-v3-turbo")
-        self.assertEqual(settings.ollama_model, "qwen3:8b")
+        self.assertEqual(settings.ollama_model, "qwen3.5:4b-q4_K_M")
         self.assertIsInstance(build_study_assistant(settings), OllamaStudyAssistant)
 
     def test_ollama_chat_uses_local_structured_output(self) -> None:
@@ -698,35 +698,59 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["format"], "json")
         self.assertEqual(captured["payload"]["options"]["num_predict"], 321)
 
-    def test_ollama_eco_mode_reduces_context_and_unloads_after_each_response(self) -> None:
+    def test_ollama_uses_the_original_context_and_keep_alive_settings(self) -> None:
         assistant = OllamaStudyAssistant(
             "http://127.0.0.1:11434",
             "test:4b",
             context_window=8192,
             keep_alive="15m",
-            performance_mode="eco",
         )
 
         payload = assistant._chat_payload([], 321, 0.2)
 
-        self.assertEqual(assistant.performance_mode, "eco")
-        self.assertEqual(payload["options"]["num_ctx"], 2048)
-        self.assertEqual(payload["keep_alive"], 0)
+        self.assertEqual(payload["options"]["num_ctx"], 8192)
+        self.assertEqual(payload["keep_alive"], "15m")
 
-    def test_ollama_performance_presets_can_be_changed_at_runtime(self) -> None:
-        assistant = OllamaStudyAssistant(
-            "http://127.0.0.1:11434",
-            "test:4b",
-            context_window=8192,
-            keep_alive="15m",
+    def test_ollama_installs_a_missing_model_before_switching(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "old:8b")
+        requests = []
+
+        def fake_request(path, payload=None, timeout=None):
+            requests.append((path, payload, timeout))
+            if path == "/api/tags":
+                return {"models": [{"name": "old:8b"}]}
+            return {"status": "success"}
+
+        assistant._request_json = fake_request
+
+        downloaded = asyncio.run(
+            assistant.install_model("qwen3.5:4b-q4_K_M")
+        )
+        assistant.set_model("qwen3.5:4b-q4_K_M")
+
+        self.assertTrue(downloaded)
+        self.assertEqual(
+            requests[-1],
+            (
+                "/api/pull",
+                {"model": "qwen3.5:4b-q4_K_M", "stream": False},
+                1800,
+            ),
+        )
+        self.assertEqual(assistant.model, "qwen3.5:4b-q4_K_M")
+        self.assertEqual(assistant.model_name, "qwen3.5:4b-q4_K_M")
+
+    def test_ollama_reuses_an_installed_model(self) -> None:
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "old:8b")
+        assistant._request_json = lambda *args: {
+            "models": [{"name": "qwen3.5:2b-q4_K_M"}]
+        }
+
+        downloaded = asyncio.run(
+            assistant.install_model("qwen3.5:2b-q4_K_M")
         )
 
-        self.assertEqual(assistant.context_window, 4096)
-        self.assertEqual(assistant.keep_alive, "2m")
-        self.assertTrue(assistant.set_performance_mode("performance"))
-        self.assertEqual(assistant.context_window, 8192)
-        self.assertEqual(assistant.keep_alive, "15m")
-        self.assertFalse(assistant.set_performance_mode("performance"))
+        self.assertFalse(downloaded)
 
     def test_ollama_answer_adds_general_knowledge(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")

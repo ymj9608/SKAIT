@@ -227,6 +227,15 @@ def prepare_environment_files(installer: Installer) -> dict[str, str]:
         if not installer.dry_run:
             replace_env_value(backend_env, "DATABASE_FILE", migrated_database_file)
         values["DATABASE_FILE"] = migrated_database_file
+    if values.get("OLLAMA_MODEL") == "qwen3:8b":
+        migrated_ollama_model = "qwen3.5:4b-q4_K_M"
+        print(
+            "  설정 변경: OLLAMA_MODEL="
+            f"{values['OLLAMA_MODEL']} → {migrated_ollama_model}"
+        )
+        if not installer.dry_run:
+            replace_env_value(backend_env, "OLLAMA_MODEL", migrated_ollama_model)
+        values["OLLAMA_MODEL"] = migrated_ollama_model
     if backend_created and not is_apple_silicon():
         values["STT_PROVIDER"] = "faster_whisper"
     return values
@@ -373,7 +382,7 @@ def install_models(
         return
 
     base_url = env_values.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = env_values.get("OLLAMA_MODEL", "qwen3:8b")
+    model = env_values.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
     start_ollama(installer, base_url)
     ollama = shutil.which("ollama") or "ollama"
     if not installer.dry_run and command_succeeds([ollama, "show", model]):

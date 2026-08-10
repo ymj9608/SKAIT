@@ -2964,7 +2964,6 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
     """Ollama의 localhost API를 사용하는 토큰 없는 생성형 학습 코치."""
 
     name = "ollama"
-    PERFORMANCE_MODES = {"eco", "balanced", "performance"}
 
     def __init__(
         self,
@@ -2973,45 +2972,13 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
         timeout_seconds: float = 180,
         context_window: int = 8192,
         keep_alive: str = "15m",
-        performance_mode: str = "balanced",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.model_name = model
         self.timeout_seconds = timeout_seconds
-        self.maximum_context_window = context_window
-        self.configured_keep_alive = keep_alive
-        self.performance_mode = "balanced"
-        self.context_window = min(context_window, 4096)
-        self.keep_alive: str | int = "2m"
-        self._request_lock = asyncio.Lock()
-        self.set_performance_mode(performance_mode)
-
-    def set_performance_mode(self, mode: str) -> bool:
-        """다음 요청부터 적용할 Ollama 메모리 프리셋을 설정합니다."""
-        normalized = mode.lower().strip()
-        if normalized not in self.PERFORMANCE_MODES:
-            raise ValueError(f"지원하지 않는 로컬 LLM 성능 모드입니다: {mode}")
-
-        previous = (
-            self.performance_mode,
-            self.context_window,
-            self.keep_alive,
-        )
-        if normalized == "eco":
-            context_window = min(self.maximum_context_window, 2048)
-            keep_alive: str | int = 0
-        elif normalized == "balanced":
-            context_window = min(self.maximum_context_window, 4096)
-            keep_alive = "2m"
-        else:
-            context_window = self.maximum_context_window
-            keep_alive = self.configured_keep_alive
-
-        self.performance_mode = normalized
         self.context_window = context_window
         self.keep_alive = keep_alive
-        return previous != (normalized, context_window, keep_alive)
 
     def _request_json(
         self,
@@ -3074,54 +3041,71 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
         max_tokens: int = 700,
         temperature: float | None = None,
     ) -> str:
-        async def request_chat() -> str:
-            # 테스트·확장 코드가 인스턴스의 동기 채팅 구현을 바꾼 경우에도
-            # 기존 동작을 유지합니다. 기본 Ollama 경로는 취소 가능한 비동기
-            # 연결을 사용하므로 브라우저 종료 시 생성 요청도 함께 끊어집니다.
-            if "_chat" in self.__dict__:
-                return await super(OllamaStudyAssistant, self)._chat_async(
+        # 테스트·확장 코드가 인스턴스의 동기 채팅 구현을 바꾼 경우에도
+        # 기존 동작을 유지합니다. 기본 Ollama 경로는 취소 가능한 비동기
+        # 연결을 사용하므로 브라우저 종료 시 생성 요청도 함께 끊어집니다.
+        if "_chat" in self.__dict__:
+            return await super()._chat_async(messages, max_tokens, temperature)
+        resolved_temperature = 0.2 if temperature is None else temperature
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout_seconds,
+            trust_env=False,
+        ) as client:
+            response = await client.post(
+                "/api/chat",
+                json=self._chat_payload(
                     messages,
                     max_tokens,
-                    temperature,
-                )
-            resolved_temperature = 0.2 if temperature is None else temperature
-            async with httpx.AsyncClient(
-                base_url=self.base_url,
-                timeout=self.timeout_seconds,
-                trust_env=False,
-            ) as client:
-                response = await client.post(
-                    "/api/chat",
-                    json=self._chat_payload(
-                        messages,
-                        max_tokens,
-                        resolved_temperature,
-                    ),
-                )
-                response.raise_for_status()
-                return self._chat_content(response.json())
-
-        if self.performance_mode == "performance":
-            return await request_chat()
-        # 여러 수업 요청이 겹쳐 컨텍스트 캐시와 연산 부하가 동시에 커지지
-        # 않도록 절전·균형 모드에서는 로컬 생성을 하나씩 처리합니다.
-        async with self._request_lock:
-            return await request_chat()
-
-    async def is_ready(self) -> bool:
-        try:
-            payload = await asyncio.to_thread(
-                self._request_json, "/api/tags", None, 3
+                    resolved_temperature,
+                ),
             )
-        except Exception:
-            return False
-        installed = {
+            response.raise_for_status()
+            return self._chat_content(response.json())
+
+    async def installed_models(self) -> set[str]:
+        payload = await asyncio.to_thread(
+            self._request_json, "/api/tags", None, 10
+        )
+        return {
             str(item.get("name") or item.get("model") or "")
             for item in payload.get("models", [])
         }
-        return self.model in installed or (
-            ":" not in self.model and f"{self.model}:latest" in installed
+
+    @staticmethod
+    def _is_model_installed(model: str, installed: set[str]) -> bool:
+        normalized = model.lower()
+        normalized_installed = {item.lower() for item in installed}
+        return normalized in normalized_installed or (
+            ":" not in normalized
+            and f"{normalized}:latest" in normalized_installed
         )
+
+    async def install_model(self, model: str) -> bool:
+        """선택 모델이 없을 때 Ollama 공식 저장소에서 한 번 내려받습니다."""
+        installed = await self.installed_models()
+        if self._is_model_installed(model, installed):
+            return False
+        payload = await asyncio.to_thread(
+            self._request_json,
+            "/api/pull",
+            {"model": model, "stream": False},
+            1800,
+        )
+        if str(payload.get("status") or "").lower() != "success":
+            raise RuntimeError("Ollama가 모델 다운로드를 완료하지 못했습니다.")
+        return True
+
+    def set_model(self, model: str) -> None:
+        self.model = model
+        self.model_name = model
+
+    async def is_ready(self) -> bool:
+        try:
+            installed = await self.installed_models()
+        except Exception:
+            return False
+        return self._is_model_installed(self.model, installed)
 
     async def close(self) -> None:
         """SKAIT 종료 시 Ollama 서버는 유지하고 로드된 모델만 즉시 내립니다."""
@@ -3153,6 +3137,5 @@ def build_study_assistant(settings: Settings) -> StudyAssistant:
             settings.ollama_timeout_seconds,
             settings.ollama_context_window,
             settings.ollama_keep_alive,
-            settings.ollama_performance_mode,
         )
     return LocalStudyAssistant()

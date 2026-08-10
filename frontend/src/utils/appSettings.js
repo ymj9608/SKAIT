@@ -3,19 +3,26 @@ export const APP_SETTINGS_STORAGE_KEY = 'skait-app-settings'
 export const DEFAULT_APP_SETTINGS = Object.freeze({
   fontSize: 8,
   summaryBatchSeconds: 120,
-  llmPerformanceMode: 'balanced',
+  llmModel: 'qwen3.5:4b-q4_K_M',
 })
+
+export const LLM_MODEL_OPTIONS = Object.freeze([
+  'qwen3.5:0.8b-q8_0',
+  'qwen3.5:2b-q4_K_M',
+  'qwen3.5:4b-q4_K_M',
+  'qwen3.5:9b-q4_K_M',
+])
 
 const MIN_FONT_SIZE = 8
 const MAX_FONT_SIZE = 14
 const MIN_SUMMARY_BATCH_SECONDS = 60
 const MAX_SUMMARY_BATCH_SECONDS = 300
-const LLM_PERFORMANCE_MODES = new Set(['eco', 'balanced', 'performance'])
+const KNOWN_LLM_MODELS = new Set([...LLM_MODEL_OPTIONS, 'qwen3:8b'])
 
 export function normalizeAppSettings(value = {}) {
   const fontSize = Number(value.fontSize)
   const summaryBatchSeconds = Number(value.summaryBatchSeconds)
-  const llmPerformanceMode = String(value.llmPerformanceMode || '')
+  const llmModel = String(value.llmModel || '')
   return {
     fontSize: Number.isInteger(fontSize)
       && fontSize >= MIN_FONT_SIZE
@@ -27,9 +34,9 @@ export function normalizeAppSettings(value = {}) {
       && summaryBatchSeconds <= MAX_SUMMARY_BATCH_SECONDS
       ? summaryBatchSeconds
       : DEFAULT_APP_SETTINGS.summaryBatchSeconds,
-    llmPerformanceMode: LLM_PERFORMANCE_MODES.has(llmPerformanceMode)
-      ? llmPerformanceMode
-      : DEFAULT_APP_SETTINGS.llmPerformanceMode,
+    llmModel: KNOWN_LLM_MODELS.has(llmModel)
+      ? llmModel
+      : DEFAULT_APP_SETTINGS.llmModel,
   }
 }
 
@@ -43,11 +50,11 @@ export function loadAppSettings(storage = globalThis.localStorage) {
   }
 }
 
-export function hasStoredLlmPerformanceMode(storage = globalThis.localStorage) {
+export function hasStoredLlmModel(storage = globalThis.localStorage) {
   if (!storage) return false
   try {
     const stored = JSON.parse(storage.getItem(APP_SETTINGS_STORAGE_KEY) || '{}')
-    return LLM_PERFORMANCE_MODES.has(String(stored.llmPerformanceMode || ''))
+    return KNOWN_LLM_MODELS.has(String(stored.llmModel || ''))
   } catch {
     return false
   }

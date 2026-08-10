@@ -38,10 +38,10 @@ async function request(path, options = {}) {
 
 export const api = {
   health: (options = {}) => request('/health', options),
-  updateLlmPerformance: (mode) =>
-    request('/settings/llm-performance', {
+  updateLlmModel: (model) =>
+    request('/settings/llm-model', {
       method: 'PATCH',
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ model }),
     }),
   clientConnection: () => new WebSocket(
     buildWebSocketUrl(API_BASE, window.location.origin),

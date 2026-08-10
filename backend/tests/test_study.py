@@ -698,6 +698,36 @@ class StudyServiceTests(unittest.TestCase):
         self.assertEqual(captured["payload"]["format"], "json")
         self.assertEqual(captured["payload"]["options"]["num_predict"], 321)
 
+    def test_ollama_eco_mode_reduces_context_and_unloads_after_each_response(self) -> None:
+        assistant = OllamaStudyAssistant(
+            "http://127.0.0.1:11434",
+            "test:4b",
+            context_window=8192,
+            keep_alive="15m",
+            performance_mode="eco",
+        )
+
+        payload = assistant._chat_payload([], 321, 0.2)
+
+        self.assertEqual(assistant.performance_mode, "eco")
+        self.assertEqual(payload["options"]["num_ctx"], 2048)
+        self.assertEqual(payload["keep_alive"], 0)
+
+    def test_ollama_performance_presets_can_be_changed_at_runtime(self) -> None:
+        assistant = OllamaStudyAssistant(
+            "http://127.0.0.1:11434",
+            "test:4b",
+            context_window=8192,
+            keep_alive="15m",
+        )
+
+        self.assertEqual(assistant.context_window, 4096)
+        self.assertEqual(assistant.keep_alive, "2m")
+        self.assertTrue(assistant.set_performance_mode("performance"))
+        self.assertEqual(assistant.context_window, 8192)
+        self.assertEqual(assistant.keep_alive, "15m")
+        self.assertFalse(assistant.set_performance_mode("performance"))
+
     def test_ollama_answer_adds_general_knowledge(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "test:4b")
         assistant._chat = lambda messages, max_tokens=700: """{

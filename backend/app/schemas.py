@@ -577,7 +577,19 @@ class HealthResponse(BaseModel):
     llm_model: str | None = None
     stt_ready: bool
     llm_ready: bool
+    llm_performance_mode: Literal["eco", "balanced", "performance"] | None = None
+    llm_context_window: int | None = None
     learning_item_batch_seconds: int = 30
     summary_batch_seconds: int = 120
     stt_error: str | None = None
     llm_error: str | None = None
+
+
+class LlmPerformanceUpdate(BaseModel):
+    mode: Literal["eco", "balanced", "performance"]
+
+
+class LlmPerformanceResponse(BaseModel):
+    mode: Literal["eco", "balanced", "performance"]
+    context_window: int
+    keep_alive: str | int

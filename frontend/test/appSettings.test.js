@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   APP_SETTINGS_STORAGE_KEY,
   DEFAULT_APP_SETTINGS,
+  hasStoredLlmPerformanceMode,
   loadAppSettings,
   normalizeAppSettings,
   resetAppSettings,
@@ -29,6 +30,7 @@ test('잘못된 설정값은 안전한 기본값으로 정규화한다', () => {
     normalizeAppSettings({
       fontSize: 99,
       summaryBatchSeconds: 30,
+      llmPerformanceMode: 'turbo',
     }),
     DEFAULT_APP_SETTINGS,
   )
@@ -39,11 +41,20 @@ test('사용자 설정을 브라우저 저장소에 저장하고 다시 불러�
   const settings = {
     fontSize: 14,
     summaryBatchSeconds: 73,
+    llmPerformanceMode: 'eco',
   }
 
   saveAppSettings(settings, storage)
 
   assert.deepEqual(loadAppSettings(storage), settings)
+  assert.equal(hasStoredLlmPerformanceMode(storage), true)
+})
+
+test('이전 버전 저장값은 LLM 성능 모드를 명시적으로 선택한 것으로 보지 않는다', () => {
+  const storage = memoryStorage(JSON.stringify({ fontSize: 10, summaryBatchSeconds: 90 }))
+
+  assert.equal(hasStoredLlmPerformanceMode(storage), false)
+  assert.equal(loadAppSettings(storage).llmPerformanceMode, 'balanced')
 })
 
 test('설정 초기화는 글자 크기와 요약 생성 주기를 모두 기본값으로 되돌린다', () => {
@@ -53,4 +64,5 @@ test('설정 초기화는 글자 크기와 요약 생성 주기를 모두 기본
   )
   assert.equal(resetAppSettings().fontSize, 8)
   assert.equal(resetAppSettings().summaryBatchSeconds, 120)
+  assert.equal(resetAppSettings().llmPerformanceMode, 'balanced')
 })

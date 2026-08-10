@@ -32,6 +32,8 @@ from .schemas import (
     EMPTY_SUMMARY_TEXT,
     HealthResponse,
     LectureSession,
+    LlmPerformanceResponse,
+    LlmPerformanceUpdate,
     ReferenceDocument,
     SessionCreate,
     SessionUpdate,
@@ -51,6 +53,7 @@ from .schemas import (
 from .services.pdf import extract_pdf_text
 from .services.stt import SpeechToText, build_stt
 from .services.study import (
+    OllamaStudyAssistant,
     StudyAssistant,
     build_study_assistant,
     build_quiz_context,
@@ -499,10 +502,48 @@ async def health() -> HealthResponse:
         llm_model=getattr(assistant, "model_name", None),
         stt_ready=stt_ready,
         llm_ready=llm_ready,
+        llm_performance_mode=getattr(assistant, "performance_mode", None),
+        llm_context_window=getattr(assistant, "context_window", None),
         learning_item_batch_seconds=settings.learning_item_batch_seconds,
         summary_batch_seconds=settings.summary_batch_seconds,
         stt_error=app.state.stt_error if not stt_ready else None,
         llm_error=app.state.llm_error if not llm_ready else None,
+    )
+
+
+@app.patch(
+    "/api/settings/llm-performance",
+    response_model=LlmPerformanceResponse,
+)
+async def update_llm_performance(
+    payload: LlmPerformanceUpdate,
+) -> LlmPerformanceResponse:
+    assistant = assistant_or_503()
+    if not isinstance(assistant, OllamaStudyAssistant):
+        raise HTTPException(
+            status_code=400,
+            detail="로컬 LLM 성능 모드는 Ollama를 사용할 때만 변경할 수 있습니다.",
+        )
+    active_tasks = [
+        task
+        for task in app.state.active_ai_tasks
+        if not task.done()
+    ]
+    if active_tasks:
+        raise HTTPException(
+            status_code=409,
+            detail="진행 중인 AI 작업이 끝난 뒤 성능 모드를 변경해 주세요.",
+        )
+
+    changed = assistant.set_performance_mode(payload.mode)
+    if changed:
+        # 기존 컨텍스트 크기로 올라간 모델을 먼저 내려야 다음 요청부터
+        # 줄어든 메모리 설정이 확실하게 적용됩니다.
+        await assistant.close()
+    return LlmPerformanceResponse(
+        mode=assistant.performance_mode,
+        context_window=assistant.context_window,
+        keep_alive=assistant.keep_alive,
     )
 
 

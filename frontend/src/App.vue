@@ -23,6 +23,7 @@ import TranscriptPanel from './components/TranscriptPanel.vue'
 import { useRecorder } from './composables/useRecorder'
 import { api } from './services/api'
 import {
+  hasStoredLlmPerformanceMode,
   loadAppSettings,
   resetAppSettings,
   saveAppSettings,
@@ -48,6 +49,8 @@ const loadFailed = ref(false)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
 const settingsModalOpen = ref(false)
+const settingsSaving = ref(false)
+const hasSavedLlmPerformanceMode = ref(hasStoredLlmPerformanceMode())
 const appSettings = ref(loadAppSettings())
 const settingsDraft = ref({ ...appSettings.value })
 const createModalOpen = ref(false)
@@ -338,10 +341,37 @@ function cancelSettings() {
   settingsModalOpen.value = false
 }
 
-function saveSettings() {
-  appSettings.value = saveAppSettings(settingsDraft.value)
-  settingsDraft.value = { ...appSettings.value }
-  settingsModalOpen.value = false
+async function applyLlmPerformanceMode(mode) {
+  if (health.value.llm_provider !== 'ollama') return null
+  const result = await api.updateLlmPerformance(mode)
+  health.value = {
+    ...health.value,
+    llm_performance_mode: result.mode,
+    llm_context_window: result.context_window,
+  }
+  return result
+}
+
+async function saveSettings() {
+  if (settingsSaving.value) return
+  settingsSaving.value = true
+  try {
+    if (
+      health.value.llm_provider === 'ollama'
+      && settingsDraft.value.llmPerformanceMode !== health.value.llm_performance_mode
+    ) {
+      await applyLlmPerformanceMode(settingsDraft.value.llmPerformanceMode)
+    }
+    appSettings.value = saveAppSettings(settingsDraft.value)
+    hasSavedLlmPerformanceMode.value = true
+    settingsDraft.value = { ...appSettings.value }
+    settingsModalOpen.value = false
+    showToast('설정을 저장했습니다.', 'success')
+  } catch (error) {
+    showToast(error.message)
+  } finally {
+    settingsSaving.value = false
+  }
 }
 
 async function loadApp() {
@@ -357,6 +387,22 @@ async function loadApp() {
     sessions.value = sessionResult
     categories.value = categoryResult
     activeSession.value = sessions.value[0] || null
+    if (!hasSavedLlmPerformanceMode.value && healthResult.llm_performance_mode) {
+      appSettings.value = {
+        ...appSettings.value,
+        llmPerformanceMode: healthResult.llm_performance_mode,
+      }
+      settingsDraft.value = { ...appSettings.value }
+    } else if (
+      healthResult.llm_provider === 'ollama'
+      && healthResult.llm_performance_mode !== appSettings.value.llmPerformanceMode
+    ) {
+      try {
+        await applyLlmPerformanceMode(appSettings.value.llmPerformanceMode)
+      } catch (error) {
+        showToast(`로컬 LLM 성능 설정을 적용하지 못했습니다. ${error.message}`)
+      }
+    }
   } catch (error) {
     loadFailed.value = true
     showToast(`백엔드에 연결할 수 없습니다. ${error.message}`)
@@ -907,6 +953,8 @@ onBeforeUnmount(() => {
       <AppSettingsModal
         v-if="settingsModalOpen"
         :settings="settingsDraft"
+        :llm-provider="health.llm_provider"
+        :saving="settingsSaving"
         @cancel="cancelSettings"
         @close="cancelSettings"
         @reset-display="resetSettingsDraft"

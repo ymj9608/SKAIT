@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     ollama_timeout_seconds: float = 180
     ollama_context_window: int = 8192
     ollama_keep_alive: str = "15m"
+    ollama_performance_mode: str = "balanced"
     learning_item_batch_seconds: int = Field(default=30, ge=15, le=60)
     summary_batch_seconds: int = Field(default=120, ge=30, le=600)
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
@@ -62,6 +63,16 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_ollama_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
+
+    @field_validator("ollama_performance_mode")
+    @classmethod
+    def validate_ollama_performance_mode(cls, value: str) -> str:
+        value = value.lower().strip()
+        if value not in {"eco", "balanced", "performance"}:
+            raise ValueError(
+                "OLLAMA_PERFORMANCE_MODE는 eco, balanced, performance 중 하나여야 합니다."
+            )
+        return value
 
     @field_validator("database_file")
     @classmethod

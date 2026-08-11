@@ -706,7 +706,7 @@ function submitQuiz() {
         <textarea
           v-model="question"
           rows="1"
-          :placeholder="llmReady ? '질문을 입력하세요…' : 'AI 튜터를 준비하는 중입니다…'"
+          :placeholder="llmReady ? '질문을 입력하세요.' : 'AI 튜터를 준비하는 중입니다…'"
           :disabled="!llmReady"
           @keydown.enter.exact.prevent="sendQuestion()"
         />
@@ -720,7 +720,7 @@ function submitQuiz() {
 
   <Teleport to="body">
     <Transition name="quiz">
-      <div v-if="learningModalType" class="quiz-backdrop" @click.self="closeLearningModal">
+      <div v-if="learningModalType" class="quiz-backdrop">
         <section
           ref="learningModal"
           class="learning-modal"
@@ -778,7 +778,7 @@ function submitQuiz() {
     </Transition>
 
     <Transition name="quiz">
-      <div v-if="quizOpen" class="quiz-backdrop" @click.self="closeQuiz">
+      <div v-if="quizOpen" class="quiz-backdrop">
         <form class="quiz-modal" @submit.prevent="submitQuiz" @keydown.esc="closeQuiz">
           <button type="button" class="modal-close" aria-label="퀴즈 닫기" @click="closeQuiz">
             <X :size="19" />
@@ -846,7 +846,7 @@ function submitQuiz() {
     </Transition>
 
     <Transition name="quiz">
-      <div v-if="quizNoticeOpen" class="quiz-backdrop" @click.self="quizNoticeOpen = false">
+      <div v-if="quizNoticeOpen" class="quiz-backdrop">
         <section class="quiz-notice-modal" role="alertdialog" aria-modal="true" aria-labelledby="quiz-notice-title">
           <span class="quiz-notice-icon"><AlertCircle :size="24" /></span>
           <h2 id="quiz-notice-title">퀴즈를 생성할 수 없습니다.</h2>

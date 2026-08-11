@@ -17,6 +17,7 @@ from app.services.study import (
     OllamaStudyAssistant,
     QUIZ_SYSTEM_PROMPT,
     build_quiz_context,
+    distribute_quiz_correct_options,
     quiz_items_are_similar,
     quiz_question_count,
     quiz_questions_are_similar,
@@ -83,6 +84,36 @@ class RecordingQuizAssistant:
 
 
 class QuizServiceTests(unittest.TestCase):
+    def test_correct_options_are_preserved_and_balanced_across_a_to_d(self) -> None:
+        questions = [sample_question(f"quiz-{index}") for index in range(6)]
+        expected_answers = [
+            item.options[item.correct_option_index]
+            for item in questions
+        ]
+
+        distributed = distribute_quiz_correct_options(questions)
+
+        self.assertEqual(
+            [item.options[item.correct_option_index] for item in distributed],
+            expected_answers,
+        )
+        counts = {
+            index: sum(item.correct_option_index == index for item in distributed)
+            for index in range(4)
+        }
+        self.assertEqual(sorted(counts.values()), [1, 1, 2, 2])
+
+    def test_a_single_quiz_question_can_use_any_answer_position(self) -> None:
+        question = sample_question()
+        answer = question.options[question.correct_option_index]
+
+        with patch("app.services.study.QUIZ_RANDOM.shuffle") as shuffle:
+            shuffle.side_effect = lambda items: items.reverse()
+            distributed = distribute_quiz_correct_options([question])
+
+        self.assertEqual(distributed[0].correct_option_index, 3)
+        self.assertEqual(distributed[0].options[3], answer)
+
     def test_quiz_payload_keeps_only_valid_unique_questions(self) -> None:
         payload = {
             "questions": [

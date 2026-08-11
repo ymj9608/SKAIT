@@ -1002,7 +1002,7 @@ onBeforeUnmount(() => {
         @update="updateSettingsDraft"
       />
 
-      <div v-if="createModalOpen" class="modal-backdrop" @click.self="createModalOpen = false">
+      <div v-if="createModalOpen" class="modal-backdrop">
         <form class="create-modal" @submit.prevent="createSession">
           <button type="button" class="modal-close" aria-label="닫기" @click="createModalOpen = false"><X :size="20" /></button>
           <div class="source-choice" role="group" aria-label="수업 소스 선택">

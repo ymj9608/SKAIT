@@ -25,6 +25,12 @@ PROJECT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = PROJECT_DIR / "backend"
 FRONTEND_DIR = PROJECT_DIR / "frontend"
 VENV_DIR = BACKEND_DIR / ".venv"
+OLLAMA_LLM_MODELS = (
+    "qwen3:0.6b-q8_0",
+    "qwen3:1.7b-q4_K_M",
+    "qwen3:4b-q4_K_M",
+    "qwen3:8b-q4_K_M",
+)
 
 
 class SetupError(RuntimeError):
@@ -228,7 +234,7 @@ def prepare_environment_files(installer: Installer) -> dict[str, str]:
             replace_env_value(backend_env, "DATABASE_FILE", migrated_database_file)
         values["DATABASE_FILE"] = migrated_database_file
     if values.get("OLLAMA_MODEL") == "qwen3:8b":
-        migrated_ollama_model = "qwen3.5:4b-q4_K_M"
+        migrated_ollama_model = "qwen3:8b-q4_K_M"
         print(
             "  설정 변경: OLLAMA_MODEL="
             f"{values['OLLAMA_MODEL']} → {migrated_ollama_model}"
@@ -382,13 +388,17 @@ def install_models(
         return
 
     base_url = env_values.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = env_values.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
     start_ollama(installer, base_url)
     ollama = shutil.which("ollama") or "ollama"
-    if not installer.dry_run and command_succeeds([ollama, "show", model]):
-        print(f"  Ollama 모델 재사용: {model}")
-    else:
-        installer.run([ollama, "pull", model])
+    configured_model = env_values.get("OLLAMA_MODEL", "qwen3:4b-q4_K_M")
+    models = list(OLLAMA_LLM_MODELS)
+    if configured_model not in models:
+        models.append(configured_model)
+    for model in models:
+        if not installer.dry_run and command_succeeds([ollama, "show", model]):
+            print(f"  Ollama 모델 재사용: {model}")
+        else:
+            installer.run([ollama, "pull", model])
 
 
 def validate_project_files() -> None:

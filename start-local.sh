@@ -45,7 +45,7 @@ fi
 
 LLM_PROVIDER=$(env_value LLM_PROVIDER ollama)
 if [[ "$LLM_PROVIDER" == "ollama" ]]; then
-  OLLAMA_MODEL=$(env_value OLLAMA_MODEL qwen3.5:4b-q4_K_M)
+  OLLAMA_MODEL=$(env_value OLLAMA_MODEL qwen3:4b-q4_K_M)
   if ! command -v ollama >/dev/null 2>&1; then
     print -u2 "Ollama가 없습니다. 'brew install ollama'를 먼저 실행하세요."
     exit 1

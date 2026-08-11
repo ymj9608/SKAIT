@@ -6,6 +6,7 @@ from typing import Awaitable, TypeVar
 from uuid import uuid4
 
 from fastapi import (
+    BackgroundTasks,
     FastAPI,
     File,
     Form,
@@ -57,6 +58,7 @@ from .services.study import (
     StudyAssistant,
     build_study_assistant,
     build_quiz_context,
+    distribute_quiz_correct_options,
     format_timestamp,
     merge_learning_items,
     quiz_question_count,
@@ -516,7 +518,10 @@ async def health() -> HealthResponse:
 
 
 @app.patch("/api/settings/llm-model", response_model=LlmModelResponse)
-async def update_llm_model(payload: LlmModelUpdate) -> LlmModelResponse:
+async def update_llm_model(
+    payload: LlmModelUpdate,
+    background_tasks: BackgroundTasks,
+) -> LlmModelResponse:
     assistant = assistant_or_503()
     if not isinstance(assistant, OllamaStudyAssistant):
         raise HTTPException(
@@ -549,8 +554,9 @@ async def update_llm_model(payload: LlmModelUpdate) -> LlmModelResponse:
                     "인터넷 연결과 Ollama 상태를 확인해 주세요."
                 ),
             ) from exc
-        await assistant.close()
+        previous_model = assistant.model
         assistant.set_model(payload.model)
+        background_tasks.add_task(assistant.unload_model, previous_model)
         return LlmModelResponse(model=assistant.model, downloaded=downloaded)
     finally:
         app.state.llm_model_change_in_progress = False
@@ -1059,7 +1065,9 @@ async def generate_quiz(session_id: str) -> LectureSession:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     # 생성 중 녹음·요약·대화가 갱신될 수 있으므로 최신 세션에 퀴즈만 반영합니다.
     latest_session = get_session_or_404(session_id)
-    latest_session.material.quiz_questions = questions
+    latest_session.material.quiz_questions = distribute_quiz_correct_options(
+        questions
+    )
     latest_session.material.quiz_generated_at = utc_now()
     return repository().save(latest_session)
 

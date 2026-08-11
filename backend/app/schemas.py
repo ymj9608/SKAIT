@@ -585,10 +585,10 @@ class HealthResponse(BaseModel):
 
 class LlmModelUpdate(BaseModel):
     model: Literal[
-        "qwen3.5:0.8b-q8_0",
-        "qwen3.5:2b-q4_K_M",
-        "qwen3.5:4b-q4_K_M",
-        "qwen3.5:9b-q4_K_M",
+        "qwen3:0.6b-q8_0",
+        "qwen3:1.7b-q4_K_M",
+        "qwen3:4b-q4_K_M",
+        "qwen3:8b-q4_K_M",
     ]
 
 

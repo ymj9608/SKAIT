@@ -37,6 +37,7 @@ from app.services.study import (
     rank_sources,
     refined_transcript_from_payload,
     remove_duplicate_topics,
+    study_material_from_payload,
 )
 
 
@@ -125,12 +126,21 @@ class StudyServiceTests(unittest.TestCase):
         )
         self.assertIn("transcription, not summarization", messages[0]["content"])
         self.assertIn("Never invent", messages[0]["content"])
+        self.assertIn("Never replace CURRENT_RAW_STT", messages[0]["content"])
+        self.assertIn("impossible to transcribe safely", messages[0]["content"])
         self.assertIn("`y_train`", messages[-1]["content"])
         self.assertIn("와이 언더바", messages[-1]["content"])
         self.assertTrue(
             any(
                 message["role"] == "assistant"
                 and "이상치(Outlier)" in message["content"]
+                for message in messages
+            )
+        )
+        self.assertTrue(
+            any(
+                message["role"] == "assistant"
+                and '"has_usable_content":false' in message["content"].replace(" ", "")
                 for message in messages
             )
         )
@@ -201,6 +211,10 @@ class StudyServiceTests(unittest.TestCase):
         self.assertIn("`~된다`", messages[0]["content"])
         self.assertIn("`~주셨어요`", messages[0]["content"])
         self.assertIn("Keep `evidence` verbatim", messages[0]["content"])
+        self.assertIn("mostly broken STT", messages[0]["content"])
+        self.assertIn("isolated number", messages[0]["content"])
+        self.assertIn("`수업 핵심`", messages[0]["content"])
+        self.assertIn("accidental Chinese/Japanese", messages[0]["content"])
         self.assertIn("silently verify", messages[0]["content"])
         self.assertIn("직전에는 REST API", messages[-1]["content"])
         self.assertIn('"REST API 요청"', messages[-1]["content"])
@@ -213,6 +227,55 @@ class StudyServiceTests(unittest.TestCase):
                 for message in messages
             )
         )
+
+    def test_full_summary_keeps_only_grounded_learning_items(self) -> None:
+        source = (
+            "REST API는 HTTP 요청을 통해 클라이언트와 서버가 데이터를 주고받는 방식입니다. "
+            "Pydantic 모델은 요청 데이터의 형식을 검증합니다."
+        )
+        material = study_material_from_payload(
+            {
+                "summary": "REST API의 통신과 Pydantic 요청 검증을 설명합니다.",
+                "key_points": [
+                    "Pydantic 모델은 요청 데이터의 형식을 검증합니다.",
+                    "NASA의 비행 계획을 자동으로 생성합니다.",
+                ],
+                "learning_items": [
+                    {
+                        "type": "term",
+                        "title": "REST API",
+                        "explanation": "HTTP 요청으로 클라이언트와 서버가 통신하는 방식입니다.",
+                        "evidence": "REST API는 HTTP 요청을 통해 클라이언트와 서버가 데이터를 주고받는 방식입니다.",
+                    },
+                    {
+                        "type": "term",
+                        "title": "OpenAI",
+                        "explanation": "수업의 핵심 데이터베이스 기술입니다.",
+                        "evidence": "수업에 없는 문장입니다.",
+                    },
+                ],
+                "review_questions": [],
+            },
+            source,
+        )
+
+        self.assertEqual([item.title for item in material.learning_items], ["REST API"])
+        self.assertEqual(
+            material.key_points,
+            ["Pydantic 모델은 요청 데이터의 형식을 검증합니다."],
+        )
+
+    def test_full_summary_rejects_an_ungrounded_summary(self) -> None:
+        with self.assertRaisesRegex(ValueError, "전사 근거"):
+            study_material_from_payload(
+                {
+                    "summary": "NASA의 달 탐사 비행 계획을 자동으로 생성합니다.",
+                    "key_points": [],
+                    "learning_items": [],
+                    "review_questions": [],
+                },
+                "REST API는 HTTP 요청과 응답으로 통신합니다.",
+            )
 
     def test_fallback_batch_summary_omits_casual_conversation(self) -> None:
         result = fallback_batch_summary(
@@ -678,7 +741,7 @@ class StudyServiceTests(unittest.TestCase):
             _env_file=None,
         )
         self.assertEqual(settings.mlx_whisper_model, "mlx-community/whisper-large-v3-turbo")
-        self.assertEqual(settings.ollama_model, "qwen3.5:4b-q4_K_M")
+        self.assertEqual(settings.ollama_model, "qwen3:4b-q4_K_M")
         self.assertIsInstance(build_study_assistant(settings), OllamaStudyAssistant)
 
     def test_ollama_chat_uses_local_structured_output(self) -> None:
@@ -724,30 +787,30 @@ class StudyServiceTests(unittest.TestCase):
         assistant._request_json = fake_request
 
         downloaded = asyncio.run(
-            assistant.install_model("qwen3.5:4b-q4_K_M")
+            assistant.install_model("qwen3:4b-q4_K_M")
         )
-        assistant.set_model("qwen3.5:4b-q4_K_M")
+        assistant.set_model("qwen3:4b-q4_K_M")
 
         self.assertTrue(downloaded)
         self.assertEqual(
             requests[-1],
             (
                 "/api/pull",
-                {"model": "qwen3.5:4b-q4_K_M", "stream": False},
+                {"model": "qwen3:4b-q4_K_M", "stream": False},
                 1800,
             ),
         )
-        self.assertEqual(assistant.model, "qwen3.5:4b-q4_K_M")
-        self.assertEqual(assistant.model_name, "qwen3.5:4b-q4_K_M")
+        self.assertEqual(assistant.model, "qwen3:4b-q4_K_M")
+        self.assertEqual(assistant.model_name, "qwen3:4b-q4_K_M")
 
     def test_ollama_reuses_an_installed_model(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "old:8b")
         assistant._request_json = lambda *args: {
-            "models": [{"name": "qwen3.5:2b-q4_K_M"}]
+            "models": [{"name": "qwen3:0.6b-q8_0"}]
         }
 
         downloaded = asyncio.run(
-            assistant.install_model("qwen3.5:2b-q4_K_M")
+            assistant.install_model("qwen3:0.6b-q8_0")
         )
 
         self.assertFalse(downloaded)
@@ -783,12 +846,14 @@ class StudyServiceTests(unittest.TestCase):
                 {
                   "type": "term",
                   "title": "화살표 함수(Arrow Function)",
-                  "explanation": "function 키워드 대신 화살표 기호를 사용하는 자바스크립트 함수 문법입니다."
+                  "explanation": "function 키워드 대신 화살표 기호를 사용하는 자바스크립트 함수 문법입니다.",
+                  "evidence": "자바스크립트에서 함수를 만드는 방법은 함수 표현식, 함수 선언식, 화살표 함수가 있습니다."
                 },
                 {
                   "type": "concept",
                   "title": "화살표 함수는 자신만의 this를 만들지 않는다",
-                  "explanation": "함수가 정의된 바깥 범위의 this를 사용한다는 의미입니다."
+                  "explanation": "함수가 정의된 바깥 범위의 this를 사용한다는 의미입니다.",
+                  "evidence": "수업에서 this 동작은 설명하지 않았습니다."
                 }
               ],
               "review_questions": ["화살표 함수는 어떤 문법인가요?"]
@@ -805,12 +870,8 @@ class StudyServiceTests(unittest.TestCase):
         self.assertIn("화살표 함수", material.summary)
         self.assertEqual(material.keywords, ["Arrow Function"])
         self.assertEqual(material.learning_items[0].title, "Arrow Function")
-        self.assertEqual(
-            material.learning_items[1].title,
-            "화살표 함수는 자신만의 this를 만들지 않습니다",
-        )
         self.assertIn("자바스크립트", material.keyword_explanations[material.keywords[0]])
-        self.assertEqual([item.type for item in material.learning_items], ["term", "concept"])
+        self.assertEqual([item.type for item in material.learning_items], ["term"])
         self.assertEqual(captured["max_tokens"], 900)
         self.assertGreaterEqual(len(captured["messages"]), 6)
         self.assertIn("All learner-facing output must be in Korean", captured["messages"][0]["content"])
@@ -839,12 +900,13 @@ class StudyServiceTests(unittest.TestCase):
         def fake_chat(messages, max_tokens=700):
             captured.update({"messages": messages, "max_tokens": max_tokens})
             return """{
-              "summary": "데이터를 train set과 test set으로 나누는 내용입니다.",
+              "summary": "train set으로 모델을 학습합니다.",
               "key_points": ["train set은 모델 학습에 사용합니다."],
               "learning_items": [{
                 "type": "term",
                 "title": "train set",
-                "explanation": "모델을 학습시키는 데이터 모음입니다."
+                "explanation": "모델을 학습시키는 데이터 모음입니다.",
+                "evidence": "트렌드 셋으로 모델을 학습합니다."
               }],
               "review_questions": ["train set의 역할은 무엇인가요?"]
             }"""

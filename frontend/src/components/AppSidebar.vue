@@ -623,7 +623,12 @@ onBeforeUnmount(() => {
               <button class="session-menu-delete" @click="deleteSession(session)"><Trash2 :size="14" /> 삭제</button>
             </div>
           </div>
-          <p v-if="!group.sessions.length" class="category-empty">아직 수업이 없습니다.</p>
+          <p
+            v-if="!group.sessions.length && !group.hasChildCategories"
+            class="category-empty"
+          >
+            아직 수업이 없습니다.
+          </p>
         </div>
       </section>
 
@@ -645,7 +650,6 @@ onBeforeUnmount(() => {
     <div
       v-if="categoryEditor"
       class="category-editor-backdrop"
-      @click.self="categoryEditor = null"
       @keydown.esc="categoryEditor = null"
     >
       <form class="category-editor-modal" @submit.prevent="submitCategoryEditor">

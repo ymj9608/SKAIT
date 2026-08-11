@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     local_whisper_model: str = "small"
     mlx_whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen3.5:4b-q4_K_M"
+    ollama_model: str = "qwen3:4b-q4_K_M"
     ollama_timeout_seconds: float = 180
     ollama_context_window: int = 8192
     ollama_keep_alive: str = "15m"

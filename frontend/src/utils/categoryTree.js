@@ -102,6 +102,7 @@ export function buildVisibleCategoryGroups(
       ...category,
       depth,
       sessions: sessionsByCategory.get(category.id) || [],
+      hasChildCategories: children.length > 0,
       containsActiveSession: containsActiveSession(category.id),
     })
     if (!collapsedCategoryIds.has(category.id)) {

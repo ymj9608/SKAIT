@@ -1,13 +1,13 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 import setting
 
 
 class EnvironmentMigrationTests(unittest.TestCase):
-    def test_existing_qwen3_default_is_updated_to_qwen3_5_4b(self) -> None:
+    def test_unsupported_ollama_model_is_normalized_to_default(self) -> None:
         with TemporaryDirectory() as directory:
             project = Path(directory)
             backend = project / "backend"
@@ -15,11 +15,11 @@ class EnvironmentMigrationTests(unittest.TestCase):
             backend.mkdir()
             frontend.mkdir()
             (backend / ".env").write_text(
-                "OLLAMA_MODEL=qwen3:8b\nSTT_PROVIDER=demo\n",
+                "OLLAMA_MODEL=unsupported:model\nSTT_PROVIDER=demo\n",
                 encoding="utf-8",
             )
             (backend / ".env.example").write_text(
-                "OLLAMA_MODEL=qwen3.5:4b-q4_K_M\nSTT_PROVIDER=demo\n",
+                "OLLAMA_MODEL=qwen3:4b-instruct-2507-q4_K_M\nSTT_PROVIDER=demo\n",
                 encoding="utf-8",
             )
             (frontend / ".env").write_text(
@@ -36,9 +36,9 @@ class EnvironmentMigrationTests(unittest.TestCase):
             ):
                 values = setting.prepare_environment_files(setting.Installer())
 
-            self.assertEqual(values["OLLAMA_MODEL"], "qwen3.5:4b-q4_K_M")
+            self.assertEqual(values["OLLAMA_MODEL"], setting.DEFAULT_OLLAMA_MODEL)
             self.assertIn(
-                "OLLAMA_MODEL=qwen3.5:4b-q4_K_M",
+                f"OLLAMA_MODEL={setting.DEFAULT_OLLAMA_MODEL}",
                 (backend / ".env").read_text(encoding="utf-8"),
             )
 
@@ -76,6 +76,64 @@ class EnvironmentMigrationTests(unittest.TestCase):
                 "DATABASE_FILE=data/skait.sqlite3",
                 backend_env.read_text(encoding="utf-8"),
             )
+
+
+class ModelInstallationTests(unittest.TestCase):
+    def test_install_models_checks_and_downloads_all_llm_options(self) -> None:
+        installer = Mock(dry_run=False)
+        installed_models = {
+            "qwen3:4b-instruct-2507-q4_K_M",
+        }
+
+        def model_is_installed(command, cwd=setting.PROJECT_DIR):
+            return command[-1] in installed_models
+
+        with (
+            patch.object(setting, "start_ollama"),
+            patch.object(setting.shutil, "which", return_value="/usr/local/bin/ollama"),
+            patch.object(setting, "command_succeeds", side_effect=model_is_installed),
+        ):
+            setting.install_models(
+                installer,
+                Path("/tmp/python"),
+                {
+                    "STT_PROVIDER": "demo",
+                    "LLM_PROVIDER": "ollama",
+                    "OLLAMA_MODEL": "qwen3:4b-instruct-2507-q4_K_M",
+                },
+            )
+
+        self.assertEqual(
+            installer.run.call_args_list,
+            [
+                call(["/usr/local/bin/ollama", "pull", "qwen3:8b-q4_K_M"]),
+                call(["/usr/local/bin/ollama", "pull", "qwen3.5:9b-q4_K_M"]),
+            ],
+        )
+
+    def test_install_models_ignores_an_unsupported_configured_model(self) -> None:
+        installer = Mock(dry_run=False)
+
+        with (
+            patch.object(setting, "start_ollama"),
+            patch.object(setting.shutil, "which", return_value="ollama"),
+            patch.object(setting, "command_succeeds", return_value=False),
+        ):
+            setting.install_models(
+                installer,
+                Path("/tmp/python"),
+                {
+                    "STT_PROVIDER": "demo",
+                    "LLM_PROVIDER": "ollama",
+                    "OLLAMA_MODEL": "custom:model",
+                },
+            )
+
+        pulled_models = [args[0][-1] for args, _ in installer.run.call_args_list]
+        self.assertEqual(
+            pulled_models,
+            list(setting.OLLAMA_LLM_MODELS),
+        )
 
 
 if __name__ == "__main__":

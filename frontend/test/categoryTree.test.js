@@ -42,6 +42,14 @@ test('hides every descendant when a parent category is collapsed', () => {
   assert.deepEqual(groups.map((group) => group.id), ['parent'])
 })
 
+test('marks a repository that contains child repositories as non-empty', () => {
+  const groups = buildVisibleCategoryGroups(categories, [], '', new Set())
+
+  assert.equal(groups.find((group) => group.id === 'parent').hasChildCategories, true)
+  assert.equal(groups.find((group) => group.id === 'child').hasChildCategories, true)
+  assert.equal(groups.find((group) => group.id === 'grandchild').hasChildCategories, false)
+})
+
 test('sorts sessions by the persisted manual order instead of their date', () => {
   const ordered = [
     { id: 'newer', sort_order: 20, created_at: '2026-07-30T00:00:00Z' },

@@ -25,6 +25,12 @@ PROJECT_DIR = Path(__file__).resolve().parent
 BACKEND_DIR = PROJECT_DIR / "backend"
 FRONTEND_DIR = PROJECT_DIR / "frontend"
 VENV_DIR = BACKEND_DIR / ".venv"
+OLLAMA_LLM_MODELS = (
+    "qwen3:4b-instruct-2507-q4_K_M",
+    "qwen3:8b-q4_K_M",
+    "qwen3.5:9b-q4_K_M",
+)
+DEFAULT_OLLAMA_MODEL = OLLAMA_LLM_MODELS[0]
 
 
 class SetupError(RuntimeError):
@@ -227,15 +233,15 @@ def prepare_environment_files(installer: Installer) -> dict[str, str]:
         if not installer.dry_run:
             replace_env_value(backend_env, "DATABASE_FILE", migrated_database_file)
         values["DATABASE_FILE"] = migrated_database_file
-    if values.get("OLLAMA_MODEL") == "qwen3:8b":
-        migrated_ollama_model = "qwen3.5:4b-q4_K_M"
+    configured_ollama_model = values.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    if configured_ollama_model not in OLLAMA_LLM_MODELS:
         print(
             "  설정 변경: OLLAMA_MODEL="
-            f"{values['OLLAMA_MODEL']} → {migrated_ollama_model}"
+            f"{configured_ollama_model} → {DEFAULT_OLLAMA_MODEL}"
         )
         if not installer.dry_run:
-            replace_env_value(backend_env, "OLLAMA_MODEL", migrated_ollama_model)
-        values["OLLAMA_MODEL"] = migrated_ollama_model
+            replace_env_value(backend_env, "OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+        values["OLLAMA_MODEL"] = DEFAULT_OLLAMA_MODEL
     if backend_created and not is_apple_silicon():
         values["STT_PROVIDER"] = "faster_whisper"
     return values
@@ -382,13 +388,13 @@ def install_models(
         return
 
     base_url = env_values.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-    model = env_values.get("OLLAMA_MODEL", "qwen3.5:4b-q4_K_M")
     start_ollama(installer, base_url)
     ollama = shutil.which("ollama") or "ollama"
-    if not installer.dry_run and command_succeeds([ollama, "show", model]):
-        print(f"  Ollama 모델 재사용: {model}")
-    else:
-        installer.run([ollama, "pull", model])
+    for model in OLLAMA_LLM_MODELS:
+        if not installer.dry_run and command_succeeds([ollama, "show", model]):
+            print(f"  Ollama 모델 재사용: {model}")
+        else:
+            installer.run([ollama, "pull", model])
 
 
 def validate_project_files() -> None:

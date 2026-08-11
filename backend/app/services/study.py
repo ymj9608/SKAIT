@@ -166,7 +166,12 @@ Rules:
 6. Never change numbers, negation, comparisons, names, or causal direction unless the correction is unambiguous.
 7. Do not copy facts that appear only in PREVIOUS_CLEAN_CONTEXT into the current transcript.
 8. Set has_usable_content=false only when the current chunk is empty, pure noise, or impossible to transcribe safely.
-9. Return exactly one JSON object. Write clean_transcript in Korean while retaining canonical technical spellings.
+9. Never replace CURRENT_RAW_STT with a paraphrase or continuation from PREVIOUS_CLEAN_CONTEXT. Every clause in
+   clean_transcript must be traceable to words spoken in CURRENT_RAW_STT.
+10. Treat a chunk as impossible to transcribe safely when several core words, entities, numbers, or relations remain
+    broken after conservative cleanup. Do not turn fragments into a plausible lecture by guessing. In that case set
+    has_usable_content=false and return an empty clean_transcript.
+11. Return exactly one JSON object. Write clean_transcript in Korean while retaining canonical technical spellings.
 
 Output schema:
 {"has_usable_content":true,"clean_transcript":"정제된 현재 구간 전사"}"""
@@ -213,6 +218,20 @@ TRANSCRIPT_REFINEMENT_ICL_MESSAGES = [
             ensure_ascii=False,
         ),
     },
+    {
+        "role": "user",
+        "content": """Refine this Korean lecture STT chunk.
+<PREVIOUS_CLEAN_CONTEXT>
+관계형 데이터베이스의 읽기와 쓰기 부하를 분리하는 구조를 설명했습니다.
+</PREVIOUS_CLEAN_CONTEXT>
+<CURRENT_RAW_STT>
+주소에서 오프에 체다 외킴 반신을 좋고 스키마 변경 타임 한걸어서 복제 번호 차량
+</CURRENT_RAW_STT>""",
+    },
+    {
+        "role": "assistant",
+        "content": '{"has_usable_content":false,"clean_transcript":""}',
+    },
 ]
 
 
@@ -250,12 +269,15 @@ Follow these rules:
    Never pad the list.
 9. Exclude pop-culture references, historical trivia, motivational advice, course logistics, and analogies used only
    to make the lecture lively. Do not save a person, character, brand, or example as a learning item.
-10. Select zero or one total item from each roughly 30-second chunk. Most chunks should return no item. Write the
+10. A product or organization name such as OpenAI is not a learning term merely because it appears in an example.
+    A `term` title must be a compact specialized noun phrase, never a full claim or a malformed STT fragment. Never
+    infer a limit, definition, or rule from an isolated number such as a file size. If the relation is unclear, omit it.
+11. Select zero or one total item from each roughly 30-second chunk. Most chunks should return no item. Write the
    explanation in Korean using one or two short sentences for non-majors. Use only formal polite Korean 하십시오체
    endings such as `~입니다.`, `~합니다.`, and `~됩니다.` in both concept titles and explanations. Never use plain
    declarative endings such as `~이다`, `~한다`, `~된다`, `~있다`, `~없다`, or `~않는다`, and never use
    conversational endings such as `~해요`, `~했어요`, or `~주셨어요`.
-11. Include `evidence`, copied exactly from CURRENT_CONTEXT, for the selected item. If no exact supporting clause can
+12. Include `evidence`, copied exactly from CURRENT_CONTEXT, for the selected item. If no exact supporting clause can
    be copied, return no item. Return one JSON object only, without markdown or commentary.
 
 Output schema:
@@ -385,6 +407,9 @@ Evidence policy:
 - Optional REFERENCE_MATERIAL is retrieval context, not lecture evidence. Use it only to resolve an obvious STT error
   or canonical technical spelling that is already supported by the transcript. Never import a PDF-only fact.
 - Never fill a gap with prior knowledge. Omit an uncertain detail instead of guessing.
+- Apply an input-quality gate before writing. When broken STT leaves an entity, number, technical term, or causal
+  relation ambiguous, omit the affected claim. Never turn a mentioned value into a formal limit, guess that a malformed
+  name is a known product, or complete an unfinished sentence from general knowledge.
 
 Content policy:
 - Exclude greetings, attendance, breaks, device setup, course logistics, motivational remarks, repetition, jokes,
@@ -399,6 +424,11 @@ Content policy:
   principle expressed as a short Korean proposition. Select only genuine comprehension blockers and never pad the list.
 - When an English technical term or a recognizable Korean phonetic rendering of one appears, write only its canonical
   English spelling in the term title. A term originally stated in Korean may keep its standard Korean spelling.
+- Every learning item must include an exact `evidence` clause copied from the transcript. Product names, broad words,
+  and isolated examples are not terms unless the lecturer substantially defines or explains them.
+- Do not emit placeholder headings such as `수업 핵심`, truncated prose ending in an ellipsis, unresolved STT fragments,
+  or accidental Chinese/Japanese characters. If no complete supported proposition remains, return minimal empty lists
+  instead of polishing noise into a plausible lesson.
 
 All learner-facing output must be in Korean except canonical technical spellings. Return exactly one valid JSON object
 matching the requested schema, with no markdown or commentary. Before returning, silently verify that every claim is
@@ -429,11 +459,13 @@ Apply the technical-term selection rules in the system instruction.
                         "type": "term",
                         "title": "REST API",
                         "explanation": "HTTP 규칙을 이용해 클라이언트와 서버가 자원을 요청하고 응답하도록 설계하는 방식입니다.",
+                        "evidence": "REST API는 HTTP 요청을 통해 클라이언트와 서버가 데이터를 주고받는 방식입니다.",
                     },
                     {
                         "type": "term",
                         "title": "Pydantic",
                         "explanation": "파이썬 데이터가 정해진 타입과 형식에 맞는지 검사해 주는 라이브러리입니다.",
+                        "evidence": "Pydantic 모델로 요청 데이터의 형식을 검증할 수 있습니다.",
                     },
                 ],
                 "review_questions": ["REST API에서 HTTP는 어떤 역할을 하나요?"],
@@ -461,6 +493,7 @@ Apply the technical-term selection rules in the system instruction.
                         "type": "term",
                         "title": "Cache",
                         "explanation": "한 번 계산하거나 불러온 결과를 저장해 같은 작업에서 다시 사용하는 방식입니다.",
+                        "evidence": "Cache는 반복 계산의 결과를 저장해 같은 요청에서 다시 계산하는 일을 줄이는 방식입니다.",
                     }
                 ],
                 "review_questions": ["Cache가 반복 계산을 줄이는 방식은 무엇인가요?"],
@@ -490,16 +523,21 @@ Rules:
    a term alone is not meaningful learning content. In these excluded cases return an empty topics list.
    Course schedules, class operation, teamwork encouragement, career motivation, claims that the course is practical,
    recommendations to study, and promises about future lessons are also non-instructional metadata.
+   Also set it to false when the current window is mostly broken STT and does not contain at least one complete,
+   independently understandable proposition. Apparent topic relevance does not make an unintelligible fragment usable.
 3. Use only claims directly supported by the current transcript. Never add general knowledge, unstated reasons,
    examples, benefits, or conclusions. General knowledge belongs only in the separate FAQ feature.
 4. Correct an STT error only when the intended canonical term is obvious from nearby words or the optional PDF
    reference. Never guess an unclear name or term; omit the uncertain detail instead.
+   Never reinterpret an isolated number as a capacity, limit, user count, or benchmark unless that relation is stated
+   clearly. If an organization or product name is uncertain, omit both the name and claims attached to it.
 5. Prioritize definitions, mechanisms, cause-and-effect, contrasts, constraints, and executable procedures. Omit
    analogies, repeated examples, ease/difficulty judgments, praise, recommendations, and historical trivia unless the
    history itself is the explicit teaching topic.
 6. Group the content by topic. Return one topic normally and at most two only when the transcript clearly mixes two
    distinct subjects. Each topic needs a concise title, a one-to-two sentence Korean summary, and zero to three
-   non-overlapping key points. Do not restate the summary as a key point.
+   non-overlapping key points. Do not restate the summary as a key point. Never use generic fallback titles such as
+   `수업 핵심`; if a specific evidence-grounded title cannot be written, omit the topic.
 7. Do not repeat a recent topic when the current transcript merely restates it. Include a repeated title only when the
    current window adds a concrete new explanation or procedure, and summarize only that new information.
 8. For each topic, copy one or more exact sentences or clauses from CURRENT_TRANSCRIPT into `evidence`. Include enough
@@ -513,6 +551,8 @@ Rules:
     directly address the learner.
     Keep `evidence` verbatim even when the quoted lecture itself is conversational or uses a plain ending.
 11. All learner-facing text must be Korean except canonical technical spellings. Return exactly one JSON object.
+    Do not output accidental Chinese/Japanese characters, unresolved phonetic fragments, incomplete clauses, or
+    summaries ending in an ellipsis. Evidence remains verbatim and is exempt from this language cleanup.
 12. Before returning, silently verify that every summary sentence and key point is supported by `evidence`, no fact
     came only from PDF_RAG_CONTEXT or prior knowledge, and no logistical or casual sentence was summarized.
 
@@ -859,20 +899,36 @@ def sync_legacy_keywords(material: StudyMaterial) -> StudyMaterial:
     return material
 
 
-def study_material_from_payload(payload: dict) -> StudyMaterial:
-    learning_items = normalize_learning_items(payload, MAX_KEYWORDS)
+def study_material_from_payload(
+    payload: dict,
+    source_context: str | None = None,
+) -> StudyMaterial:
+    learning_items = normalize_learning_items(
+        payload,
+        MAX_KEYWORDS,
+        source_context,
+    )
     summary = normalize_honorific_prose(str(payload.get("summary") or ""))
     if not summary:
         raise ValueError("summary가 비어 있습니다.")
+    if source_context and grounding_coverage(summary, source_context) < 0.30:
+        raise ValueError("summary가 전사 근거를 충분히 반영하지 않습니다.")
     raw_key_points = payload.get("key_points")
     raw_review_questions = payload.get("review_questions")
     normalized = dict(payload)
     normalized["summary"] = summary
-    normalized["key_points"] = [
+    normalized_points = [
         normalize_honorific_prose(str(item))
         for item in (raw_key_points if isinstance(raw_key_points, list) else [])
         if str(item).strip()
-    ][:5]
+    ]
+    if source_context:
+        normalized_points = [
+            point
+            for point in normalized_points
+            if grounding_coverage(point, source_context) >= 0.30
+        ]
+    normalized["key_points"] = normalized_points[:5]
     normalized["keywords"] = []
     normalized["keyword_explanations"] = {}
     normalized["learning_items"] = learning_items
@@ -1214,6 +1270,33 @@ def quiz_questions_from_payload(
     if not questions:
         raise ValueError("유효한 퀴즈 문항이 없습니다.")
     return questions
+
+
+def distribute_quiz_correct_options(
+    questions: list[QuizQuestion],
+) -> list[QuizQuestion]:
+    """정답 내용은 유지하면서 한 퀴즈 안의 A~D 위치를 고르게 섞습니다."""
+    target_indices: list[int] = []
+    while len(target_indices) < len(questions):
+        cycle = list(range(4))
+        QUIZ_RANDOM.shuffle(cycle)
+        target_indices.extend(cycle)
+    target_indices = target_indices[: len(questions)]
+    distributed: list[QuizQuestion] = []
+    for item, target_index in zip(questions, target_indices):
+        question = item.model_copy(deep=True)
+        correct_option = question.options[question.correct_option_index]
+        distractors = [
+            option
+            for index, option in enumerate(question.options)
+            if index != question.correct_option_index
+        ]
+        QUIZ_RANDOM.shuffle(distractors)
+        distractors.insert(target_index, correct_option)
+        question.options = distractors
+        question.correct_option_index = target_index
+        distributed.append(question)
+    return distributed
 
 
 def build_quiz_context(
@@ -2684,8 +2767,8 @@ Requirements:
 - REFERENCE_MATERIAL is optional supporting material. Use it only to resolve likely STT mistakes such as a spoken
   "trend set" that is clearly written as "train set". Never add a fact that appears only in the reference material to
   the summary, key points, learning items, or review questions.
-- Return exactly one JSON object with this schema:
-{{"summary":"한국어 요약","key_points":["한국어 핵심 포인트"],"learning_items":[{{"type":"term|concept","title":"영어 원어 또는 짧은 한국어 명제","explanation":"쉬운 한국어 설명"}}],"review_questions":["한국어 복습 질문"]}}
+- Return exactly one JSON object with this schema. Copy each learning item's evidence exactly from TRANSCRIPT:
+{{"summary":"한국어 요약","key_points":["한국어 핵심 포인트"],"learning_items":[{{"type":"term|concept","title":"영어 원어 또는 짧은 한국어 명제","explanation":"쉬운 한국어 설명","evidence":"TRANSCRIPT의 정확한 근거 문구"}}],"review_questions":["한국어 복습 질문"]}}
 
 <TRANSCRIPT>
 {transcript}
@@ -2700,7 +2783,10 @@ Requirements:
                 ],
                 900,
             )
-            return study_material_from_payload(extract_json_payload(raw))
+            return study_material_from_payload(
+                extract_json_payload(raw),
+                transcript,
+            )
         except Exception as exc:
             # 외부 추론 서비스 오류 시에도 로컬 추출 요약으로 학습 흐름을 유지합니다.
             logger.warning("%s summary failed (%s): %s", self.name, self.model, exc)
@@ -3109,20 +3195,24 @@ class OllamaStudyAssistant(HuggingFaceStudyAssistant):
 
     async def close(self) -> None:
         """SKAIT 종료 시 Ollama 서버는 유지하고 로드된 모델만 즉시 내립니다."""
+        await self.unload_model(self.model)
+
+    async def unload_model(self, model: str) -> None:
+        """지정 모델만 내리므로 모델 전환 후 백그라운드에서도 안전하게 호출할 수 있습니다."""
         try:
             await asyncio.to_thread(
                 self._request_json,
                 "/api/generate",
                 {
-                    "model": self.model,
+                    "model": model,
                     "keep_alive": 0,
                 },
                 10,
             )
-            logger.info("ollama model unloaded (%s)", self.model)
+            logger.info("ollama model unloaded (%s)", model)
         except Exception as exc:
             # Ollama가 먼저 종료됐거나 연결할 수 없어도 앱 종료를 막지 않습니다.
-            logger.info("ollama model unload skipped (%s): %s", self.model, exc)
+            logger.info("ollama model unload skipped (%s): %s", model, exc)
 
 
 def build_study_assistant(settings: Settings) -> StudyAssistant:

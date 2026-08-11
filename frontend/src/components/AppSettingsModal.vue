@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import {
   Cpu,
   RotateCcw,
@@ -20,40 +20,21 @@ const emit = defineEmits(['cancel', 'close', 'reset-display', 'save', 'update'])
 const modal = ref(null)
 const qwenModels = [
   {
-    value: 'qwen3.5:0.8b-q8_0',
-    label: 'Qwen 3.5 0.8B · 실험용',
-    detail: '약 1.0GB · 가장 가볍지만 전체 기능의 품질 저하가 큼',
+    value: 'qwen3:4b-instruct-2507-q4_K_M',
+    label: 'Qwen 3 4B Instruct · 기본',
+    detail: '약 2.5GB · 지시 이행과 구조화된 응답에 최적화',
   },
   {
-    value: 'qwen3.5:2b-q4_K_M',
-    label: 'Qwen 3.5 2B',
-    detail: '약 1.9GB · 가볍지만 요약 품질이 낮을 수 있음',
-  },
-  {
-    value: 'qwen3.5:4b-q4_K_M',
-    label: 'Qwen 3.5 4B · 기본',
-    detail: '약 3.4GB · 속도와 품질의 균형',
+    value: 'qwen3:8b-q4_K_M',
+    label: 'Qwen 3 8B · 균형',
+    detail: '약 5.2GB · 더 높은 품질, 연산량과 발열 증가',
   },
   {
     value: 'qwen3.5:9b-q4_K_M',
     label: 'Qwen 3.5 9B · 품질 우선',
-    detail: '약 6.6GB · 답변 품질 우선, 연산량과 발열 증가',
+    detail: '약 6.6GB · 최고 품질, 가장 많은 메모리와 연산량 사용',
   },
 ]
-
-const modelOptions = computed(() => {
-  if (!props.settings.llmModel || qwenModels.some((item) => item.value === props.settings.llmModel)) {
-    return qwenModels
-  }
-  return [
-    {
-      value: props.settings.llmModel,
-      label: `${props.settings.llmModel} · 기존 모델`,
-      detail: 'Qwen 3.5 모델을 선택하면 다시 선택할 수 없습니다.',
-    },
-    ...qwenModels,
-  ]
-})
 
 function updateSetting(key, value) {
   if (key === 'llmModel' && props.llmModelDisabled) return
@@ -73,7 +54,7 @@ onMounted(() => modal.value?.focus())
 </script>
 
 <template>
-  <div class="settings-backdrop" @click.self="emit('close')">
+  <div class="settings-backdrop">
     <section
       ref="modal"
       class="settings-modal"
@@ -128,7 +109,7 @@ onMounted(() => modal.value?.focus())
             :aria-disabled="props.llmModelDisabled"
           >
             <button
-              v-for="model in modelOptions"
+              v-for="model in qwenModels"
               :key="model.value"
               type="button"
               role="radio"
@@ -146,8 +127,7 @@ onMounted(() => modal.value?.focus())
               학습 또는 AI 작업 진행 중에는 모델을 변경할 수 없습니다. 작업이 끝난 뒤 변경해 주세요.
             </template>
             <template v-else>
-            선택한 모델 하나를 전사 보정·요약·용어 탐지·퀴즈·질문 답변에 모두 사용합니다.
-            기능을 바꿀 때 모델을 다시 불러오지 않습니다. 0.8B·2B는 저사양·실험용입니다.
+            모델에 따라 GPU, CPU 연산량이 다르고, 성능이 떨어질 수 있습니다.
             </template>
           </p>
         </section>

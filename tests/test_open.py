@@ -26,12 +26,15 @@ class ExistingServerStartupTests(unittest.TestCase):
                 {
                     "LLM_PROVIDER": "ollama",
                     "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
-                    "OLLAMA_MODEL": "qwen3:8b",
+                    "OLLAMA_MODEL": "qwen3:8b-q4_K_M",
                 }
             )
 
         self.assertTrue(unloaded)
-        self.assertEqual(run.call_args.args[0], ["/opt/homebrew/bin/ollama", "stop", "qwen3:8b"])
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/opt/homebrew/bin/ollama", "stop", "qwen3:8b-q4_K_M"],
+        )
         self.assertEqual(
             run.call_args.kwargs["env"]["OLLAMA_HOST"],
             "http://127.0.0.1:11434",

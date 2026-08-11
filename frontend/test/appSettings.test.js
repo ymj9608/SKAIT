@@ -12,12 +12,11 @@ import {
   saveAppSettings,
 } from '../src/utils/appSettings.js'
 
-test('Qwen 3 네 가지 모델 크기를 선택할 수 있다', () => {
+test('지원하는 Qwen 모델 세 가지를 선택할 수 있다', () => {
   assert.deepEqual(LLM_MODEL_OPTIONS, [
-    'qwen3:0.6b-q8_0',
-    'qwen3:1.7b-q4_K_M',
     'qwen3:4b-q4_K_M',
     'qwen3:8b-q4_K_M',
+    'qwen3.5:9b-q4_K_M',
   ])
 })
 
@@ -51,7 +50,7 @@ test('사용자 설정을 브라우저 저장소에 저장하고 다시 불러�
   const settings = {
     fontSize: 14,
     summaryBatchSeconds: 73,
-    llmModel: 'qwen3:0.6b-q8_0',
+    llmModel: 'qwen3.5:9b-q4_K_M',
   }
 
   saveAppSettings(settings, storage)

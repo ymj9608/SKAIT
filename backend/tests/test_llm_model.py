@@ -8,12 +8,11 @@ from app.services.study import OllamaStudyAssistant
 
 
 class LlmModelSettingsTests(unittest.IsolatedAsyncioTestCase):
-    def test_qwen_3_models_are_available_model_options(self) -> None:
+    def test_supported_qwen_models_are_available_model_options(self) -> None:
         for model in (
-            "qwen3:0.6b-q8_0",
-            "qwen3:1.7b-q4_K_M",
             "qwen3:4b-q4_K_M",
             "qwen3:8b-q4_K_M",
+            "qwen3.5:9b-q4_K_M",
         ):
             with self.subTest(model=model):
                 self.assertEqual(LlmModelUpdate(model=model).model, model)
@@ -21,7 +20,7 @@ class LlmModelSettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_change_switches_before_unloading_previous_model(self) -> None:
         assistant = OllamaStudyAssistant(
             "http://127.0.0.1:11434",
-            "qwen3:0.6b-q8_0",
+            "qwen3:8b-q4_K_M",
         )
         calls = []
 
@@ -55,7 +54,7 @@ class LlmModelSettingsTests(unittest.IsolatedAsyncioTestCase):
             calls,
             [
                 ("install", "qwen3:4b-q4_K_M"),
-                ("unload", "qwen3:0.6b-q8_0"),
+                ("unload", "qwen3:8b-q4_K_M"),
             ],
         )
         self.assertEqual(response.model, "qwen3:4b-q4_K_M")

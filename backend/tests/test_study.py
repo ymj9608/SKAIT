@@ -806,11 +806,11 @@ class StudyServiceTests(unittest.TestCase):
     def test_ollama_reuses_an_installed_model(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "old:8b")
         assistant._request_json = lambda *args: {
-            "models": [{"name": "qwen3:0.6b-q8_0"}]
+            "models": [{"name": "qwen3.5:9b-q4_K_M"}]
         }
 
         downloaded = asyncio.run(
-            assistant.install_model("qwen3:0.6b-q8_0")
+            assistant.install_model("qwen3.5:9b-q4_K_M")
         )
 
         self.assertFalse(downloaded)
@@ -1096,14 +1096,14 @@ class StudyServiceTests(unittest.TestCase):
         self.assertLess(len(context), sum(len(item.text) for item in segments) + 1000)
 
     def test_ollama_readiness_checks_installed_model(self) -> None:
-        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b")
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b-q4_K_M")
         assistant._request_json = lambda *args: {
-            "models": [{"name": "qwen3:8b"}]
+            "models": [{"name": "qwen3:8b-q4_K_M"}]
         }
         self.assertTrue(asyncio.run(assistant.is_ready()))
 
     def test_ollama_close_unloads_model_immediately(self) -> None:
-        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b")
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b-q4_K_M")
         requests = []
 
         def record_request(*args):
@@ -1118,14 +1118,14 @@ class StudyServiceTests(unittest.TestCase):
             [
                 (
                     "/api/generate",
-                    {"model": "qwen3:8b", "keep_alive": 0},
+                    {"model": "qwen3:8b-q4_K_M", "keep_alive": 0},
                     10,
                 )
             ],
         )
 
     def test_ollama_async_chat_closes_immediately_when_cancelled(self) -> None:
-        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b")
+        assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "qwen3:8b-q4_K_M")
         request_started = asyncio.Event()
         request_cancelled = asyncio.Event()
 

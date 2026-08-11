@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import {
   Cpu,
   RotateCcw,
@@ -20,40 +20,21 @@ const emit = defineEmits(['cancel', 'close', 'reset-display', 'save', 'update'])
 const modal = ref(null)
 const qwenModels = [
   {
-    value: 'qwen3:0.6b-q8_0',
-    label: 'Qwen 3 0.6B · 실험용',
-    detail: '약 0.8GB · 가장 가볍지만 전체 기능의 품질 저하가 큼',
-  },
-  {
-    value: 'qwen3:1.7b-q4_K_M',
-    label: 'Qwen 3 1.7B · 경량',
-    detail: '약 1.4GB · 저사양 환경의 기능 비교용',
-  },
-  {
     value: 'qwen3:4b-q4_K_M',
     label: 'Qwen 3 4B · 기본',
     detail: '약 2.6GB · 속도와 품질의 균형',
   },
   {
     value: 'qwen3:8b-q4_K_M',
-    label: 'Qwen 3 8B · 품질 우선',
-    detail: '약 5.2GB · 답변 품질 우선, 연산량과 발열 증가',
+    label: 'Qwen 3 8B · 균형',
+    detail: '약 5.2GB · 더 높은 품질, 연산량과 발열 증가',
+  },
+  {
+    value: 'qwen3.5:9b-q4_K_M',
+    label: 'Qwen 3.5 9B · 품질 우선',
+    detail: '약 6.6GB · 최고 품질, 가장 많은 메모리와 연산량 사용',
   },
 ]
-
-const modelOptions = computed(() => {
-  if (!props.settings.llmModel || qwenModels.some((item) => item.value === props.settings.llmModel)) {
-    return qwenModels
-  }
-  return [
-    {
-      value: props.settings.llmModel,
-      label: `${props.settings.llmModel} · 기존 모델`,
-      detail: 'Qwen 3 모델을 선택하면 다시 선택할 수 없습니다.',
-    },
-    ...qwenModels,
-  ]
-})
 
 function updateSetting(key, value) {
   if (key === 'llmModel' && props.llmModelDisabled) return
@@ -128,7 +109,7 @@ onMounted(() => modal.value?.focus())
             :aria-disabled="props.llmModelDisabled"
           >
             <button
-              v-for="model in modelOptions"
+              v-for="model in qwenModels"
               :key="model.value"
               type="button"
               role="radio"
@@ -147,7 +128,7 @@ onMounted(() => modal.value?.focus())
             </template>
             <template v-else>
             선택한 모델 하나를 전사 보정·요약·용어 탐지·퀴즈·질문 답변에 모두 사용합니다.
-            기능을 바꿀 때 모델을 다시 불러오지 않습니다. 0.6B·1.7B는 저사양·실험용입니다.
+            기능을 바꿀 때 모델을 다시 불러오지 않습니다. 기본 모델은 Qwen 3 4B입니다.
             </template>
           </p>
         </section>

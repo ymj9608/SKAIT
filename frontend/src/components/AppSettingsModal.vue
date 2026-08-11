@@ -20,9 +20,9 @@ const emit = defineEmits(['cancel', 'close', 'reset-display', 'save', 'update'])
 const modal = ref(null)
 const qwenModels = [
   {
-    value: 'qwen3:4b-q4_K_M',
-    label: 'Qwen 3 4B · 기본',
-    detail: '약 2.6GB · 속도와 품질의 균형',
+    value: 'qwen3:4b-instruct-2507-q4_K_M',
+    label: 'Qwen 3 4B Instruct · 기본',
+    detail: '약 2.5GB · 지시 이행과 구조화된 응답에 최적화',
   },
   {
     value: 'qwen3:8b-q4_K_M',
@@ -128,7 +128,7 @@ onMounted(() => modal.value?.focus())
             </template>
             <template v-else>
             선택한 모델 하나를 전사 보정·요약·용어 탐지·퀴즈·질문 답변에 모두 사용합니다.
-            기능을 바꿀 때 모델을 다시 불러오지 않습니다. 기본 모델은 Qwen 3 4B입니다.
+            기능을 바꿀 때 모델을 다시 불러오지 않습니다. 기본 모델은 Qwen 3 4B Instruct입니다.
             </template>
           </p>
         </section>

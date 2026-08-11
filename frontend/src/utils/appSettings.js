@@ -3,11 +3,11 @@ export const APP_SETTINGS_STORAGE_KEY = 'skait-app-settings'
 export const DEFAULT_APP_SETTINGS = Object.freeze({
   fontSize: 8,
   summaryBatchSeconds: 120,
-  llmModel: 'qwen3:4b-q4_K_M',
+  llmModel: 'qwen3:4b-instruct-2507-q4_K_M',
 })
 
 export const LLM_MODEL_OPTIONS = Object.freeze([
-  'qwen3:4b-q4_K_M',
+  'qwen3:4b-instruct-2507-q4_K_M',
   'qwen3:8b-q4_K_M',
   'qwen3.5:9b-q4_K_M',
 ])

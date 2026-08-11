@@ -10,7 +10,7 @@ from app.services.study import OllamaStudyAssistant
 class LlmModelSettingsTests(unittest.IsolatedAsyncioTestCase):
     def test_supported_qwen_models_are_available_model_options(self) -> None:
         for model in (
-            "qwen3:4b-q4_K_M",
+            "qwen3:4b-instruct-2507-q4_K_M",
             "qwen3:8b-q4_K_M",
             "qwen3.5:9b-q4_K_M",
         ):
@@ -40,11 +40,14 @@ class LlmModelSettingsTests(unittest.IsolatedAsyncioTestCase):
         main.app.state.llm_model_change_in_progress = False
         try:
             response = await main.update_llm_model(
-                LlmModelUpdate(model="qwen3:4b-q4_K_M"),
+                LlmModelUpdate(model="qwen3:4b-instruct-2507-q4_K_M"),
                 background_tasks,
             )
-            self.assertEqual(calls, [("install", "qwen3:4b-q4_K_M")])
-            self.assertEqual(assistant.model, "qwen3:4b-q4_K_M")
+            self.assertEqual(
+                calls,
+                [("install", "qwen3:4b-instruct-2507-q4_K_M")],
+            )
+            self.assertEqual(assistant.model, "qwen3:4b-instruct-2507-q4_K_M")
             await background_tasks()
         finally:
             main.app.state._state.clear()
@@ -53,13 +56,13 @@ class LlmModelSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             calls,
             [
-                ("install", "qwen3:4b-q4_K_M"),
+                ("install", "qwen3:4b-instruct-2507-q4_K_M"),
                 ("unload", "qwen3:8b-q4_K_M"),
             ],
         )
-        self.assertEqual(response.model, "qwen3:4b-q4_K_M")
+        self.assertEqual(response.model, "qwen3:4b-instruct-2507-q4_K_M")
         self.assertTrue(response.downloaded)
-        self.assertEqual(assistant.model, "qwen3:4b-q4_K_M")
+        self.assertEqual(assistant.model, "qwen3:4b-instruct-2507-q4_K_M")
 
 
 if __name__ == "__main__":

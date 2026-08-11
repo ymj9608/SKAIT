@@ -186,7 +186,7 @@ def ensure_ollama(
         processes.append(process)
         wait_until("Ollama", lambda: ollama_is_ready(base_url), process, timeout=30)
 
-    model = env_values.get("OLLAMA_MODEL", "qwen3:4b-q4_K_M")
+    model = env_values.get("OLLAMA_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
     result = subprocess.run(
         [ollama, "show", model],
         env=ollama_env,
@@ -214,7 +214,7 @@ def unload_ollama_model(env_values: dict[str, str]) -> bool:
         return False
     process_env = dict(os.environ)
     process_env["OLLAMA_HOST"] = base_url
-    model = env_values.get("OLLAMA_MODEL", "qwen3:4b-q4_K_M")
+    model = env_values.get("OLLAMA_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
     try:
         result = subprocess.run(
             [ollama, "stop", model],

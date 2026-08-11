@@ -26,7 +26,7 @@ BACKEND_DIR = PROJECT_DIR / "backend"
 FRONTEND_DIR = PROJECT_DIR / "frontend"
 VENV_DIR = BACKEND_DIR / ".venv"
 OLLAMA_LLM_MODELS = (
-    "qwen3:4b-q4_K_M",
+    "qwen3:4b-instruct-2507-q4_K_M",
     "qwen3:8b-q4_K_M",
     "qwen3.5:9b-q4_K_M",
 )

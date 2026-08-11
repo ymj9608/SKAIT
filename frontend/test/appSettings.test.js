@@ -14,7 +14,7 @@ import {
 
 test('지원하는 Qwen 모델 세 가지를 선택할 수 있다', () => {
   assert.deepEqual(LLM_MODEL_OPTIONS, [
-    'qwen3:4b-q4_K_M',
+    'qwen3:4b-instruct-2507-q4_K_M',
     'qwen3:8b-q4_K_M',
     'qwen3.5:9b-q4_K_M',
   ])
@@ -63,7 +63,7 @@ test('이전 버전 저장값은 LLM 모델을 명시적으로 선택한 것으�
   const storage = memoryStorage(JSON.stringify({ fontSize: 10, summaryBatchSeconds: 90 }))
 
   assert.equal(hasStoredLlmModel(storage), false)
-  assert.equal(loadAppSettings(storage).llmModel, 'qwen3:4b-q4_K_M')
+  assert.equal(loadAppSettings(storage).llmModel, 'qwen3:4b-instruct-2507-q4_K_M')
 })
 
 test('설정 초기화는 글자 크기와 요약 생성 주기를 모두 기본값으로 되돌린다', () => {
@@ -73,5 +73,5 @@ test('설정 초기화는 글자 크기와 요약 생성 주기를 모두 기본
   )
   assert.equal(resetAppSettings().fontSize, 8)
   assert.equal(resetAppSettings().summaryBatchSeconds, 120)
-  assert.equal(resetAppSettings().llmModel, 'qwen3:4b-q4_K_M')
+  assert.equal(resetAppSettings().llmModel, 'qwen3:4b-instruct-2507-q4_K_M')
 })

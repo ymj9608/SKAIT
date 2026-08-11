@@ -19,7 +19,7 @@ class EnvironmentMigrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (backend / ".env.example").write_text(
-                "OLLAMA_MODEL=qwen3:4b-q4_K_M\nSTT_PROVIDER=demo\n",
+                "OLLAMA_MODEL=qwen3:4b-instruct-2507-q4_K_M\nSTT_PROVIDER=demo\n",
                 encoding="utf-8",
             )
             (frontend / ".env").write_text(
@@ -82,7 +82,7 @@ class ModelInstallationTests(unittest.TestCase):
     def test_install_models_checks_and_downloads_all_llm_options(self) -> None:
         installer = Mock(dry_run=False)
         installed_models = {
-            "qwen3:4b-q4_K_M",
+            "qwen3:4b-instruct-2507-q4_K_M",
         }
 
         def model_is_installed(command, cwd=setting.PROJECT_DIR):
@@ -99,7 +99,7 @@ class ModelInstallationTests(unittest.TestCase):
                 {
                     "STT_PROVIDER": "demo",
                     "LLM_PROVIDER": "ollama",
-                    "OLLAMA_MODEL": "qwen3:4b-q4_K_M",
+                    "OLLAMA_MODEL": "qwen3:4b-instruct-2507-q4_K_M",
                 },
             )
 

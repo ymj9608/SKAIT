@@ -741,7 +741,10 @@ class StudyServiceTests(unittest.TestCase):
             _env_file=None,
         )
         self.assertEqual(settings.mlx_whisper_model, "mlx-community/whisper-large-v3-turbo")
-        self.assertEqual(settings.ollama_model, "qwen3:4b-q4_K_M")
+        self.assertEqual(
+            settings.ollama_model,
+            "qwen3:4b-instruct-2507-q4_K_M",
+        )
         self.assertIsInstance(build_study_assistant(settings), OllamaStudyAssistant)
 
     def test_ollama_chat_uses_local_structured_output(self) -> None:
@@ -787,21 +790,24 @@ class StudyServiceTests(unittest.TestCase):
         assistant._request_json = fake_request
 
         downloaded = asyncio.run(
-            assistant.install_model("qwen3:4b-q4_K_M")
+            assistant.install_model("qwen3:4b-instruct-2507-q4_K_M")
         )
-        assistant.set_model("qwen3:4b-q4_K_M")
+        assistant.set_model("qwen3:4b-instruct-2507-q4_K_M")
 
         self.assertTrue(downloaded)
         self.assertEqual(
             requests[-1],
             (
                 "/api/pull",
-                {"model": "qwen3:4b-q4_K_M", "stream": False},
+                {"model": "qwen3:4b-instruct-2507-q4_K_M", "stream": False},
                 1800,
             ),
         )
-        self.assertEqual(assistant.model, "qwen3:4b-q4_K_M")
-        self.assertEqual(assistant.model_name, "qwen3:4b-q4_K_M")
+        self.assertEqual(assistant.model, "qwen3:4b-instruct-2507-q4_K_M")
+        self.assertEqual(
+            assistant.model_name,
+            "qwen3:4b-instruct-2507-q4_K_M",
+        )
 
     def test_ollama_reuses_an_installed_model(self) -> None:
         assistant = OllamaStudyAssistant("http://127.0.0.1:11434", "old:8b")

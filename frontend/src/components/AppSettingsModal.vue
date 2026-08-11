@@ -127,8 +127,7 @@ onMounted(() => modal.value?.focus())
               학습 또는 AI 작업 진행 중에는 모델을 변경할 수 없습니다. 작업이 끝난 뒤 변경해 주세요.
             </template>
             <template v-else>
-            선택한 모델 하나를 전사 보정·요약·용어 탐지·퀴즈·질문 답변에 모두 사용합니다.
-            기능을 바꿀 때 모델을 다시 불러오지 않습니다. 기본 모델은 Qwen 3 4B Instruct입니다.
+            모델에 따라 GPU, CPU 연산량이 다르고, 성능이 떨어질 수 있습니다.
             </template>
           </p>
         </section>

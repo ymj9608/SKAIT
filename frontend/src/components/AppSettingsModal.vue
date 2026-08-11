@@ -12,6 +12,7 @@ import {
 const props = defineProps({
   settings: { type: Object, required: true },
   llmProvider: { type: String, default: '' },
+  llmModelDisabled: { type: Boolean, default: false },
   saving: { type: Boolean, default: false },
 })
 
@@ -55,6 +56,7 @@ const modelOptions = computed(() => {
 })
 
 function updateSetting(key, value) {
+  if (key === 'llmModel' && props.llmModelDisabled) return
   emit('update', { key, value })
 }
 
@@ -119,7 +121,12 @@ onMounted(() => modal.value?.focus())
             <Cpu :size="18" />
             <h3>로컬 LLM 모델</h3>
           </div>
-          <div class="llm-model-options" role="radiogroup" aria-label="로컬 LLM 모델">
+          <div
+            class="llm-model-options"
+            role="radiogroup"
+            aria-label="로컬 LLM 모델"
+            :aria-disabled="props.llmModelDisabled"
+          >
             <button
               v-for="model in modelOptions"
               :key="model.value"
@@ -127,6 +134,7 @@ onMounted(() => modal.value?.focus())
               role="radio"
               :aria-checked="settings.llmModel === model.value"
               :class="{ active: settings.llmModel === model.value }"
+              :disabled="props.llmModelDisabled"
               @click="updateSetting('llmModel', model.value)"
             >
               <strong>{{ model.label }}</strong>
@@ -134,8 +142,13 @@ onMounted(() => modal.value?.focus())
             </button>
           </div>
           <p class="llm-model-help">
+            <template v-if="props.llmModelDisabled">
+              학습 또는 AI 작업 진행 중에는 모델을 변경할 수 없습니다. 작업이 끝난 뒤 변경해 주세요.
+            </template>
+            <template v-else>
             선택한 모델 하나를 전사 보정·요약·용어 탐지·퀴즈·질문 답변에 모두 사용합니다.
             기능을 바꿀 때 모델을 다시 불러오지 않습니다. 0.8B·2B는 저사양·실험용입니다.
+            </template>
           </p>
         </section>
 

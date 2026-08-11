@@ -23,7 +23,7 @@ const props = defineProps({
   session: { type: Object, default: null },
   llmReady: { type: Boolean, default: true },
 })
-const emit = defineEmits(['updated', 'error', 'source-selected'])
+const emit = defineEmits(['updated', 'error', 'source-selected', 'ai-busy-change'])
 
 const tab = ref('note')
 const question = ref('')
@@ -84,6 +84,9 @@ const correctQuizOption = computed(() => (
 const quizCorrect = computed(() => quizSelected.value === correctQuizOption.value)
 const quizGenerating = computed(() => Boolean(
   quizGeneratingSessions.value[props.session?.id],
+))
+const aiBusy = computed(() => (
+  asking.value || Object.keys(quizGeneratingSessions.value).length > 0
 ))
 const hasSummaryContent = computed(() => (
   material.value.summary_cards?.some((card) => card.topics?.length)
@@ -305,6 +308,8 @@ watch(
 watch(tab, (activeTab) => {
   if (activeTab === 'chat') void scrollToBottom()
 })
+
+watch(aiBusy, (busy) => emit('ai-busy-change', busy), { immediate: true })
 
 onMounted(() => {
   const savedWidth = Number(localStorage.getItem(PANEL_WIDTH_STORAGE_KEY))

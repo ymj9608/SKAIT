@@ -3307,6 +3307,22 @@ body.is-resizing-learning-sections {
   background: #fff8f5;
 }
 
+.llm-model-options button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.llm-model-options button:disabled:hover {
+  border-color: #e8ddd8;
+  background: #fff;
+}
+
+.llm-model-options button.active:disabled,
+.llm-model-options button.active:disabled:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
 .llm-model-options button.active {
   border-color: var(--brand);
   color: var(--brand-dark);

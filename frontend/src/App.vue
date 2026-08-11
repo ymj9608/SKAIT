@@ -29,6 +29,7 @@ import {
   saveAppSettings,
 } from './utils/appSettings'
 import { getRecordingActionLabel } from './utils/recordingAction'
+import { isLlmModelLocked } from './utils/aiActivity'
 import { mergeSessionResponse } from './utils/sessionState'
 import skaitLogo from './assets/brand/skait-logo.png'
 
@@ -67,6 +68,8 @@ const transcriptPanel = ref(null)
 const uploadingReference = ref(false)
 const deletingReferenceId = ref('')
 const isFinalizing = ref(false)
+const appAiRequestCount = ref(0)
+const coachAiBusy = ref(false)
 const toast = ref(null)
 let toastTimer = null
 const recordingSessionId = ref(null)
@@ -300,6 +303,13 @@ const activeSessionIsBeingRecorded = computed(() => (
   Boolean(recordingSessionId.value && activeSession.value?.id === recordingSessionId.value)
 ))
 
+const llmModelLocked = computed(() => isLlmModelLocked({
+  recordingSessionId: recordingSessionId.value,
+  recorderProcessing: recorder.isProcessing.value,
+  appAiRequestCount: appAiRequestCount.value,
+  coachAiBusy: coachAiBusy.value,
+}))
+
 const previewSettings = computed(() => (
   settingsModalOpen.value ? settingsDraft.value : appSettings.value
 ))
@@ -326,6 +336,7 @@ function openSettingsModal() {
 }
 
 function updateSettingsDraft({ key, value }) {
+  if (key === 'llmModel' && llmModelLocked.value) return
   settingsDraft.value = {
     ...settingsDraft.value,
     [key]: value,
@@ -333,7 +344,19 @@ function updateSettingsDraft({ key, value }) {
 }
 
 function resetSettingsDraft() {
-  settingsDraft.value = resetAppSettings()
+  const resetSettings = resetAppSettings()
+  settingsDraft.value = llmModelLocked.value
+    ? { ...resetSettings, llmModel: settingsDraft.value.llmModel }
+    : resetSettings
+}
+
+async function trackAppAiRequest(operation) {
+  appAiRequestCount.value += 1
+  try {
+    return await operation()
+  } finally {
+    appAiRequestCount.value = Math.max(0, appAiRequestCount.value - 1)
+  }
 }
 
 function cancelSettings() {
@@ -355,10 +378,10 @@ async function applyLlmModel(model) {
 async function saveSettings() {
   if (settingsSaving.value) return
   if (
-    recordingSessionId.value
+    llmModelLocked.value
     && settingsDraft.value.llmModel !== health.value.llm_model
   ) {
-    showToast('학습을 종료한 뒤 로컬 LLM 모델을 변경해 주세요.', 'info')
+    showToast('진행 중인 학습 또는 AI 작업이 끝난 뒤 로컬 LLM 모델을 변경해 주세요.', 'info')
     return
   }
   settingsSaving.value = true
@@ -633,7 +656,9 @@ async function uploadActiveReference(event) {
   const sessionId = activeSession.value.id
   uploadingReference.value = true
   try {
-    updateSessionInBackground(await api.uploadReferences(sessionId, files))
+    updateSessionInBackground(await trackAppAiRequest(
+      () => api.uploadReferences(sessionId, files),
+    ))
     showToast(`PDF 참고 자료 ${files.length}개를 연결하고 AI 노트를 갱신했습니다.`, 'success')
   } catch (error) {
     showToast(error.message)
@@ -643,7 +668,7 @@ async function uploadActiveReference(event) {
 }
 
 function refreshMaterialInBackground(sessionId) {
-  api.refreshSummary(sessionId).then((session) => {
+  trackAppAiRequest(() => api.refreshSummary(sessionId)).then((session) => {
     const index = sessions.value.findIndex((item) => item.id === session.id)
     if (index >= 0) sessions.value.splice(index, 1, session)
     if (activeSession.value?.id === session.id) {
@@ -934,6 +959,7 @@ onBeforeUnmount(() => {
         <CoachPanel
           :session="activeSession"
           :llm-ready="health.llm_ready"
+          @ai-busy-change="coachAiBusy = $event"
           @updated="updateSessionInBackground"
           @error="showToast"
           @source-selected="focusSummarySource"
@@ -967,6 +993,7 @@ onBeforeUnmount(() => {
         v-if="settingsModalOpen"
         :settings="settingsDraft"
         :llm-provider="health.llm_provider"
+        :llm-model-disabled="llmModelLocked"
         :saving="settingsSaving"
         @cancel="cancelSettings"
         @close="cancelSettings"
